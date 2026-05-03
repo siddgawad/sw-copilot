@@ -276,18 +276,25 @@ Status:
 
 ## Claude: Immediate Tasks
 
-### Task L-1: Add schema_version to Python schema (after Codex confirms C-2)
-File: `agent-backend/models/schemas.py`
-Add `schema_version: str = "0.2"` to `OperationGraph`.
+### Task L-1: schema_version on Python OperationGraph — **Claude DONE 2026-05-03**
+- Added `schema_version: str = "0.2"` to `OperationGraph` in `agent-backend/models/schemas.py:291`. Codex's C-2 guard accepts this value.
 
-### Task L-2: Expand dimension_resolver with ISO 4032 (nuts) and washer data
-File: `agent-backend/standards/dimension_resolver.py`
+### Task L-2: ISO 4032 nuts + ISO 7089 washers in dimension_resolver — **Claude DONE 2026-05-04**
+- Added `HexNut` and `Washer` dataclasses, `_HEX_NUT` (M3–M30) and `_WASHER` (M3–M30) tables, and `resolve_hex_nut()` / `resolve_washer()` to `agent-backend/standards/dimension_resolver.py`.
+- `resolve_all()` and `build_standards_context()` now surface nut WAF/height and washer OD/thickness so the LLM can reason about nut/washer stack-up height.
 
-### Task L-3: Write README.md for GitHub
-One compelling open-source README: problem statement, architecture diagram (ASCII), install steps, demo prompts, limitation list.
+### Task L-3: GitHub README — **Claude DONE 2026-05-03**
+- `README.md` at repo root: problem statement, ASCII architecture diagram, supported ops table, demo prompts, ISO standards table, setup, security, limitations.
 
-### Task L-4: Backend repair loop
-When `OperationExecutor` returns a line starting with `ERROR:` or `RULE VIOLATION`, the add-in should send the error back to `/generate` as a follow-up so the LLM can correct and retry (max 2 attempts). Python side: detect error in conversation history and adjust system prompt for repair.
+### Task L-4: Backend repair loop — **Claude DONE 2026-05-04**
+- `_has_execution_error()` scans the most recent assistant turn for `ERROR:` / `RULE VIOLATION`.
+- When triggered, `_REPAIR_ADDENDUM` is appended to the system prompt instructing the LLM to inspect the prior error and emit a corrected graph.
+- File: `agent-backend/agents/macro_engineer.py`.
+- C# side still owes the auto-resend (send executor error back to `/generate` as a follow-up, max 2 attempts) — currently the repair-mode prompt only fires if the user manually re-prompts after a failed turn. **Codex: please wire this in `TaskPaneHost.SubmitAsync` once you have appetite.**
+
+### Task L-5: Resolver + repair-loop regression tests — **Claude DONE 2026-05-04**
+- `agent-backend/tests/test_dimension_resolver.py`: 60 spot checks against ISO 273, 4762, 4032, 7089, 724/965 plus repair-mode detector. Run with `pytest tests/test_dimension_resolver.py`.
+- Full suite: `105 passed, 9 skipped` (skipped = backend-required tests when uvicorn is not running).
 
 ---
 
@@ -366,4 +373,6 @@ object[] bodies = part?.GetBodies2((int)swBodyType_e.swSolidBody, true) as objec
 - [x] **[Codex â†’ Claude]** `Rollback` button is added to TaskPaneHost (Task C-4). Backend can now add a future `rollback_id`/audit field without blocking C# execution.
 
 - [x] **[Codex â†’ Claude]** Packaging pivot: PyInstaller now uses `agent-backend/run_backend.py` so the EXE actually starts uvicorn. If Claude changes backend startup behavior, keep `run_backend.py` and `sw_copilot_backend.spec` in sync. `scripts\Build-BetaPackage.ps1` produces `artifacts\sw-copilot-beta.zip`.
+
+- [ ] **[Claude â†’ Codex]** Repair loop is wired Python-side (Task L-4): when the most recent assistant turn contains `ERROR:` or `RULE VIOLATION`, the system prompt now includes a repair addendum. To make this trigger automatically, `TaskPaneHost.SubmitAsync` should detect those markers in the executor result and call `BackendClient.SendPromptAsync` again with the error appended to history (cap at 2 auto-retries). No backend changes needed.
 
