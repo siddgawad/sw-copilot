@@ -53,6 +53,23 @@ class TapDrill:
     standard: str = "ISO 724 / ISO 965"
 
 
+@dataclass(frozen=True)
+class HexNut:
+    nominal: str
+    width_across_flats_mm: float   # s — wrench size
+    nut_height_mm: float            # m
+    standard: str = "ISO 4032"
+
+
+@dataclass(frozen=True)
+class Washer:
+    nominal: str
+    inner_dia_mm: float    # d1
+    outer_dia_mm: float    # d2
+    thickness_mm: float    # h
+    standard: str = "ISO 7089"
+
+
 # ── ISO 273 clearance holes ───────────────────────────────────────────────────
 
 _CLEARANCE: dict[str, ClearanceHole] = {
@@ -137,6 +154,49 @@ _TAP_DRILL: dict[str, TapDrill] = {
 }
 
 
+# ── ISO 4032 hexagon nuts ─────────────────────────────────────────────────────
+
+_HEX_NUT: dict[str, HexNut] = {
+    k.nominal: k for k in [
+        HexNut("M3",  5.5,  2.4),
+        HexNut("M4",  7.0,  3.2),
+        HexNut("M5",  8.0,  4.7),
+        HexNut("M6",  10.0, 5.2),
+        HexNut("M8",  13.0, 6.8),
+        HexNut("M10", 17.0, 8.4),
+        HexNut("M12", 19.0, 10.8),
+        HexNut("M14", 22.0, 12.8),
+        HexNut("M16", 24.0, 14.8),
+        HexNut("M18", 27.0, 15.8),
+        HexNut("M20", 30.0, 18.0),
+        HexNut("M22", 32.0, 19.4),
+        HexNut("M24", 36.0, 21.5),
+        HexNut("M27", 41.0, 23.8),
+        HexNut("M30", 46.0, 25.6),
+    ]
+}
+
+# ── ISO 7089 plain washers (normal series) ────────────────────────────────────
+
+_WASHER: dict[str, Washer] = {
+    k.nominal: k for k in [
+        Washer("M3",  3.2,  7.0,  0.5),
+        Washer("M4",  4.3,  9.0,  0.8),
+        Washer("M5",  5.3,  10.0, 1.0),
+        Washer("M6",  6.4,  12.0, 1.6),
+        Washer("M8",  8.4,  16.0, 1.6),
+        Washer("M10", 10.5, 20.0, 2.0),
+        Washer("M12", 13.0, 24.0, 2.5),
+        Washer("M14", 15.0, 28.0, 2.5),
+        Washer("M16", 17.0, 30.0, 3.0),
+        Washer("M20", 21.0, 37.0, 3.0),
+        Washer("M24", 25.0, 44.0, 4.0),
+        Washer("M27", 28.0, 50.0, 4.0),
+        Washer("M30", 31.0, 56.0, 4.0),
+    ]
+}
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def _normalise(size: str) -> str:
@@ -210,6 +270,35 @@ def resolve_tap_drill(fastener: str) -> dict | None:
     }
 
 
+def resolve_hex_nut(fastener: str) -> dict | None:
+    """Returns ISO 4032 hex nut width across flats and height."""
+    row = _HEX_NUT.get(_normalise(fastener))
+    if row is None:
+        return None
+    return {
+        "fastener": row.nominal,
+        "width_across_flats_mm": row.width_across_flats_mm,
+        "nut_height_mm": row.nut_height_mm,
+        "source_ref": f"{row.standard}__{row.nominal}__nut",
+        "standard": row.standard,
+    }
+
+
+def resolve_washer(fastener: str) -> dict | None:
+    """Returns ISO 7089 plain washer dimensions."""
+    row = _WASHER.get(_normalise(fastener))
+    if row is None:
+        return None
+    return {
+        "fastener": row.nominal,
+        "washer_inner_dia_mm": row.inner_dia_mm,
+        "washer_outer_dia_mm": row.outer_dia_mm,
+        "washer_thickness_mm": row.thickness_mm,
+        "source_ref": f"{row.standard}__{row.nominal}__washer",
+        "standard": row.standard,
+    }
+
+
 def resolve_all(fastener: str) -> dict:
     """
     Returns everything known about a fastener size in one call.
@@ -240,6 +329,18 @@ def resolve_all(fastener: str) -> dict:
         result["pitch_mm"]            = td["pitch_mm"]
         result["min_engagement_steel_mm"] = td["min_engagement_steel_mm"]
         result["resolved"].append(td)
+
+    hn = resolve_hex_nut(size)
+    if hn:
+        result["nut_width_across_flats_mm"] = hn["width_across_flats_mm"]
+        result["nut_height_mm"]             = hn["nut_height_mm"]
+        result["resolved"].append(hn)
+
+    ws = resolve_washer(size)
+    if ws:
+        result["washer_outer_dia_mm"]  = ws["washer_outer_dia_mm"]
+        result["washer_thickness_mm"]  = ws["washer_thickness_mm"]
+        result["resolved"].append(ws)
 
     return result
 
@@ -289,6 +390,10 @@ def build_standards_context(prompt: str) -> tuple[str, list[str]]:
             td = next((r for r in data["resolved"] if "min_engagement_steel_mm" in r), None)
             if td:
                 lines.append(f"  Min thread engagement: {td['min_engagement_steel_mm']} mm steel / {td['min_engagement_alum_mm']} mm aluminium")
+        if "nut_width_across_flats_mm" in data:
+            lines.append(f"  Hex nut (ISO 4032):   {data['nut_width_across_flats_mm']} mm AF x {data['nut_height_mm']} mm tall")
+        if "washer_outer_dia_mm" in data:
+            lines.append(f"  Plain washer (ISO 7089): OD {data['washer_outer_dia_mm']} mm x {data['washer_thickness_mm']} mm thick")
         for r in data["resolved"]:
             source_refs.append(r["source_ref"])
 

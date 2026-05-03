@@ -227,6 +227,34 @@ Output:
 """
 
 
+_REPAIR_ADDENDUM = """
+════════════════════════════════════════
+REPAIR MODE — execution error detected
+════════════════════════════════════════
+The previous OperationGraph was rejected by the SolidWorks executor with the error shown
+in the conversation history. You MUST:
+1. Read the exact ERROR or RULE VIOLATION message from the prior assistant turn.
+2. Identify which operation caused the failure.
+3. Emit a corrected OperationGraph that avoids the same error.
+   Common fixes:
+   - "Could not select top face" → change face_of to "Top Plane" (standard plane always works)
+   - "Depth must be positive" → use a positive depth_mm value
+   - "circular_pattern count must be >= 2" → ensure count >= 2
+   - "missing position" → add at least one position to hole_wizard.positions
+4. Do NOT repeat the exact same operations. Change the problematic parameter.
+"""
+
+
+def _has_execution_error(history: list[ConversationMessage] | None) -> bool:
+    """Returns True if the most recent assistant message contains an executor error."""
+    if not history:
+        return False
+    for msg in reversed(history):
+        if msg.role == "assistant":
+            return "ERROR:" in msg.content or "RULE VIOLATION" in msg.content
+    return False
+
+
 def _build_context_block(ctx: DocumentContext, rag_context: str = "") -> str:
     lines = [
         f"Active Document Type : {ctx.document_type}",
@@ -276,7 +304,8 @@ class MacroEngineerAgent:
             + f"SolidWorks Context:\n{_build_context_block(ctx, rag_context)}"
         )
 
-        messages: list[dict] = [{"role": "system", "content": _SYSTEM_PROMPT}]
+        system = _SYSTEM_PROMPT + (_REPAIR_ADDENDUM if _has_execution_error(conversation_history) else "")
+        messages: list[dict] = [{"role": "system", "content": system}]
 
         # Inject prior turns so the LLM can see previous dimensions and op IDs.
         for msg in (conversation_history or []):
