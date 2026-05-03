@@ -21,7 +21,7 @@ This is NOT "make LLM understand CAD." Reliability comes from determinism at eve
 4. Pydantic validation (Python) + DTO validation (C#) â€” schema enforced before any execution
 5. `OperationExecutor.ValidateGraph()` â€” geometric rule engine refuses impossibilities before COM
 6. `OperationExecutor.Execute()` â€” deterministic SolidWorks COM calls, 12 operation types
-7. Post-execution validation â€” TODO Week 2 (Codex task)
+7. Post-execution validation â€” backend `/validate` compares requested OperationGraph to C# PartReport
 
 ---
 
@@ -113,10 +113,11 @@ Latest Codex validation on 2026-05-03:
 - Restored missing backend source packages into this repo: `agents/`, `models/`, `rag/`, `standards/`, `knowledge/`, `tests/`.
 - Recreated backend venv at `agent-backend\.venv` and installed `agent-backend\requirements.txt`.
 - C# build from `sw-addin-client`: 0 warnings, 0 errors.
-- Backend tests from `agent-backend`: `47 passed, 1 skipped`; skipped test is live LLM generation when provider quota/rate limit blocks the call.
+- Backend tests from `agent-backend`: `122 passed, 9 skipped`; skipped tests are backend-required/live-service checks when uvicorn or provider quota is unavailable.
 - Backend import check passed: `OperationGraph.schema_version == "0.2"`.
 - C# rollback build on 2026-05-03: `Release-beta3`, 0 warnings, 0 errors.
-- Beta package build on 2026-05-03 succeeded: `artifacts\sw-copilot-beta.zip` (~112 MB). Packaged backend `/version` smoke check passed on port 8002 with `vector_docs=37`.
+- C# repair-loop build on 2026-05-03: `Release-beta4`, 0 warnings, 0 errors.
+- Beta package build on 2026-05-03 succeeded: `artifacts\sw-copilot-beta.zip` (112,087,758 bytes). SHA-256 `0189DF72FD282AD4BE64B60415AA16F9214A6EF18346C116CAC89AA0FCFB3E45`. Packaged backend `/version` smoke check passed on port 8002 with `vector_docs=37`; packaged `/validate` smoke passed with `passed=true`.
 - Sanitizer hardening on 2026-05-03: C# strips full paths to filenames before context upload; C# and Python both remove newlines/backticks/control chars and redact injection markers. Backend sanitizer tests: `19 passed`; full security suite: `53 passed, 1 skipped`; smoke test: `10 passed, 1 skipped, 0 failed` (LLM rate-limit skip).
 
 ### Backend (Python) â€” needs uvicorn restart to pick up latest changes
@@ -133,6 +134,7 @@ if ($p) { Stop-Process -Id $p -Force; Start-Sleep -Seconds 1 }
 **What's working:**
 - All routes require `X-Copilot-Token` header (token written to `%LOCALAPPDATA%\SwCopilotAddin\backend.token` at startup)
 - `POST /generate` returns `operation_graph` (primary path), falls back to `cad_command`, then `macro_code`
+- `POST /validate` compares an OperationGraph against the C# PartReport and returns discrepancies for bbox/body/features
 - `GenerateRequest.messages[]` â€” full conversation history passed from add-in, injected as prior turns into LLM
 - `standards/dimension_resolver.py` â€” scans prompt for M3â€“M30 fasteners, injects exact ISO dimensions before LLM call
 - RAG: 37 chunks in ChromaDB (4 knowledge .md files). Auto-ingested at startup when store is empty.
@@ -147,13 +149,13 @@ if ($p) { Stop-Process -Id $p -Force; Start-Sleep -Seconds 1 }
 - `agent-backend/sw_copilot_backend.spec` must point at `run_backend.py`, not `main.py`.
 - Build-only dependency is in `agent-backend/requirements-build.txt`.
 
-### C# Add-in â€” BUILDS CLEAN (Release-beta3) âœ…
+### C# Add-in â€” BUILDS CLEAN (Release-beta4) âœ…
 
 **Build command (close SolidWorks first â€” it locks the DLL):**
 ```powershell
 cd C:\projects\sw-copilot\sw-addin-client
 dotnet build SwCopilotAddin.csproj -c Release -p:Platform=x64 -p:RegisterForComInterop=false `
-  -p:OutDir=C:\projects\sw-copilot\sw-addin-client\bin\x64\Release-beta3\net48\
+  -p:OutDir=C:\projects\sw-copilot\sw-addin-client\bin\x64\Release-beta4\net48\
 ```
 
 **Register (run from elevated PowerShell in sw-addin-client\):**
@@ -179,6 +181,7 @@ Output: `artifacts\sw-copilot-beta.zip`.
 - Conversation history: `TaskPaneHost._history` (List<ConversationMessage>) populated after each response, passed to backend
 - Plan preview dialog shown before execution; user can cancel
 - Post-execution part report appended after successful `OperationExecutor.Execute()` calls
+- TaskPaneHost now sends the part report to backend `/validate` and appends validation pass/warning/error output to chat
 - Operation graph schema version guard added; non-null versions must equal `"0.2"`
 - Undo Last button added to `TaskPaneHost.cs`; `OperationExecutor.RollbackLastExecute()` deletes the features created by the last operation graph.
 - Release package script added: `scripts\Build-BetaPackage.ps1`.
@@ -296,6 +299,14 @@ Status:
 - `agent-backend/tests/test_dimension_resolver.py`: 60 spot checks against ISO 273, 4762, 4032, 7089, 724/965 plus repair-mode detector. Run with `pytest tests/test_dimension_resolver.py`.
 - Full suite: `105 passed, 9 skipped` (skipped = backend-required tests when uvicorn is not running).
 
+### Task L-6: Post-execution validation agent (pipeline step 7) — **Claude DONE 2026-05-04**
+- `agent-backend/agents/validation_agent.py`: `validate(graph, report, tolerance_mm)` compares the requested `OperationGraph` against Codex's `PartReport` and emits a `ValidationReport` with categorised discrepancies (`bounding_box`, `body_count`, `feature_count`, `suppressed_feature`, etc.).
+- Models added to `models/schemas.py`: `BoundingBox`, `PartFeatureInfo`, `PartReport`, `Discrepancy`, `ValidationReport`, `ValidateRequest`.
+- New endpoint: `POST /validate` (token-gated). Body: `{"operation_graph": ..., "part_report": ..., "tolerance_mm": 1.0}` → `ValidationReport`.
+- Coverage today: bounding-box derivation for single-extrude graphs (Top/Front/Right Plane), body-count sanity, feature-count lower bound, suppressed-feature detection. Multi-extrude graphs safely skip the bbox check rather than emit false positives.
+- Tests: `agent-backend/tests/test_validation_agent.py` — 17 cases including a tolerance sweep. Full suite now `122 passed, 9 skipped`.
+- **Codex hand-off**: after `OperationExecutor.Execute()` succeeds and `ExtractPartReport` is appended to the result, `TaskPaneHost` should POST `{operation_graph, part_report}` to `/validate` and surface any errors/warnings in the chat. Suggested label: `Validation: passed` or `Validation: 1 error, 2 warnings`. Endpoint already exists — just wire the call.
+
 ---
 
 ## Architecture Constraints â€” Never Break These
@@ -374,5 +385,27 @@ object[] bodies = part?.GetBodies2((int)swBodyType_e.swSolidBody, true) as objec
 
 - [x] **[Codex â†’ Claude]** Packaging pivot: PyInstaller now uses `agent-backend/run_backend.py` so the EXE actually starts uvicorn. If Claude changes backend startup behavior, keep `run_backend.py` and `sw_copilot_backend.spec` in sync. `scripts\Build-BetaPackage.ps1` produces `artifacts\sw-copilot-beta.zip`.
 
-- [ ] **[Claude â†’ Codex]** Repair loop is wired Python-side (Task L-4): when the most recent assistant turn contains `ERROR:` or `RULE VIOLATION`, the system prompt now includes a repair addendum. To make this trigger automatically, `TaskPaneHost.SubmitAsync` should detect those markers in the executor result and call `BackendClient.SendPromptAsync` again with the error appended to history (cap at 2 auto-retries). No backend changes needed.
+- [x] **[Claude â†’ Codex]** Repair loop is wired Python-side (Task L-4): C# auto-resend is now wired in `TaskPaneHost.SubmitAsync` through `ExecuteOperationGraphWithRepairAsync`. It detects `ERROR:` / `RULE VIOLATION`, appends the failed graph + runtime error to temporary assistant history, and calls `/generate` again for up to 2 automatic repair attempts. Every repaired graph still requires preview confirmation before execution. Verified: C# `Release-beta4` build clean, backend pytest `122 passed, 9 skipped`.
 
+- [ ] **[Claude â†’ Codex]** Validation endpoint shipped (Task L-6): `POST /validate` accepts `{operation_graph, part_report, tolerance_mm}` and returns a `ValidationReport`. Suggested wiring: after `OperationExecutor.Execute()` succeeds and the part-report JSON is appended to the runtime line, parse that JSON into a `PartReportDto`, POST `{operation_graph, part_report}` to `/validate`, and surface the result in chat as `Validation: passed` or `Validation: 1 error, 2 warnings — <first error message>`. No backend changes needed, only `BackendClient` + `TaskPaneHost`.
+
+- [ ] **[Codex â†’ Claude]** Backend prompt/token-budget hardening: keep ownership inside `agent-backend/`. The live Groq smoke test is sometimes skipped/rate-limited, so reduce simple-prompt token usage without weakening standards grounding. Inspect `agents/macro_engineer.py`, `agents/rag_agent.py`, and `standards/dimension_resolver.py`; cap or conditionally include long RAG/API context for simple primitive prompts; add no-live-LLM tests that prove repair addendum still triggers and simple prompt construction stays within a conservative character/token budget. Do not edit `sw-addin-client/`.
+
+---
+
+## Current Work Split - 2026-05-03
+
+**Codex owns now:**
+- `sw-addin-client/UI/TaskPaneHost.cs`: automatic repair retry loop, legacy Roslyn fallback blocked by default, C# build/package validation.
+- `scripts/Build-BetaPackage.ps1`: rebuild `artifacts/sw-copilot-beta.zip` after validation.
+
+**Claude owns next if available:**
+- `agent-backend/` only: prompt/token-budget hardening, backend tests, and documentation updates for the next prototype.
+- Do not touch C# while Codex is validating beta4.
+
+**Prompt to paste into Claude Code:**
+```text
+Read C:\projects\sw-copilot\CLAUDE.md first. Own agent-backend/ only. Codex is handling C# beta4 repair-loop validation and packaging, so do not edit sw-addin-client/.
+
+Your task: harden backend prompt/token budget for the next testable prototype. Inspect agents/macro_engineer.py, agents/rag_agent.py, standards/dimension_resolver.py, and tests/. Reduce token/character usage for simple primitive prompts without weakening deterministic standards grounding. Keep repair mode working when the latest assistant history contains ERROR: or RULE VIOLATION. Add no-live-LLM regression tests proving: (1) repair addendum triggers from assistant error history, (2) simple prompts do not include excessive RAG/API context, (3) standards context still appears for fastener prompts. Run pytest. Update CLAUDE.md with exact files changed and results. Commit your changes.
+```

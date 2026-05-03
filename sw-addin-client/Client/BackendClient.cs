@@ -4,6 +4,7 @@ using System.Net.Http;
 using System.Text;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 
 namespace SwCopilotAddin.Client
 {
@@ -82,6 +83,70 @@ namespace SwCopilotAddin.Client
             return JsonConvert.DeserializeObject<AgentResponse>(body)
                    ?? new AgentResponse { StatusMessage = "Empty response from backend." };
         }
+
+        public async Task<ValidationResponse> ValidateOperationAsync(
+            OperationGraphDto operationGraph,
+            string partReportJson,
+            double toleranceMm = 1.0)
+        {
+            await BackendRuntime.EnsureReadyAsync(_http, BaseUrl);
+
+            JObject partReport = JObject.Parse(partReportJson);
+            var payload = new
+            {
+                operation_graph = operationGraph,
+                part_report = partReport,
+                tolerance_mm = toleranceMm,
+            };
+
+            string json = JsonConvert.SerializeObject(payload);
+            var content = new StringContent(json, Encoding.UTF8, "application/json");
+
+            HttpResponseMessage response;
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Post, $"{BaseUrl.TrimEnd('/')}/validate")
+                {
+                    Content = content,
+                };
+                request.Headers.Add("X-Copilot-Token", BackendRuntime.ReadToken());
+                response = await _http.SendAsync(request);
+            }
+            catch (TaskCanceledException ex)
+            {
+                throw new System.InvalidOperationException(
+                    $"Backend validation timed out after {_http.Timeout.TotalSeconds:0} seconds. URL: {BaseUrl}.",
+                    ex);
+            }
+            catch (HttpRequestException ex)
+            {
+                throw new System.InvalidOperationException(
+                    $"Could not reach backend validation endpoint at {BaseUrl}.",
+                    ex);
+            }
+
+            string body = await response.Content.ReadAsStringAsync();
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new System.InvalidOperationException(
+                    $"Backend validation returned HTTP {(int)response.StatusCode} {response.ReasonPhrase}: {body}");
+            }
+
+            return JsonConvert.DeserializeObject<ValidationResponse>(body)
+                   ?? new ValidationResponse
+                   {
+                       Passed = false,
+                       Discrepancies = new[]
+                       {
+                           new ValidationDiscrepancy
+                           {
+                               Category = "response",
+                               Severity = "error",
+                               Message = "Empty validation response from backend.",
+                           },
+                       },
+                   };
+        }
     }
 
     public sealed class ConversationMessage
@@ -111,5 +176,41 @@ namespace SwCopilotAddin.Client
 
         [JsonProperty("rag_sources")]
         public string[] RagSources { get; set; } = System.Array.Empty<string>();
+    }
+
+    public sealed class ValidationResponse
+    {
+        [JsonProperty("passed")]
+        public bool Passed { get; set; }
+
+        [JsonProperty("has_warnings")]
+        public bool HasWarnings { get; set; }
+
+        [JsonProperty("discrepancies")]
+        public ValidationDiscrepancy[] Discrepancies { get; set; } = System.Array.Empty<ValidationDiscrepancy>();
+
+        [JsonProperty("expected_summary")]
+        public Dictionary<string, object> ExpectedSummary { get; set; } = new Dictionary<string, object>();
+
+        [JsonProperty("actual_summary")]
+        public Dictionary<string, object> ActualSummary { get; set; } = new Dictionary<string, object>();
+    }
+
+    public sealed class ValidationDiscrepancy
+    {
+        [JsonProperty("category")]
+        public string Category { get; set; } = string.Empty;
+
+        [JsonProperty("severity")]
+        public string Severity { get; set; } = string.Empty;
+
+        [JsonProperty("expected")]
+        public string Expected { get; set; } = string.Empty;
+
+        [JsonProperty("actual")]
+        public string Actual { get; set; } = string.Empty;
+
+        [JsonProperty("message")]
+        public string Message { get; set; } = string.Empty;
     }
 }

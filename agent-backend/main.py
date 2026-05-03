@@ -9,7 +9,12 @@ from starlette.concurrency import run_in_threadpool
 
 from agents.macro_engineer import MacroEngineerAgent
 from agents.rag_agent import RagAgent
-from models.schemas import DocumentContext, GenerateRequest, GenerateResponse, IngestResponse, OperationGraph
+from agents.validation_agent import validate as validate_graph_against_report
+from models.schemas import (
+    DocumentContext, GenerateRequest, GenerateResponse,
+    IngestResponse, OperationGraph,
+    ValidateRequest, ValidationReport,
+)
 from config import settings
 
 # ── Application-level singletons initialised once at startup ──────────────────
@@ -172,6 +177,21 @@ async def ingest(
         ingested_files=len(results),
         total_chunks=sum(results.values()),
         detail=results,
+    )
+
+
+@app.post("/validate", response_model=ValidationReport, dependencies=[Depends(verify_token)])
+async def validate(req: ValidateRequest) -> ValidationReport:
+    """
+    Compare a previously-generated OperationGraph (what was requested) against
+    the PartReport returned by OperationExecutor.ExtractPartReport (what SW
+    actually built). Returns a ValidationReport flagging any discrepancies in
+    bounding box, body count, feature count, or suppressed features.
+    """
+    return validate_graph_against_report(
+        req.operation_graph,
+        req.part_report,
+        tolerance_mm=req.tolerance_mm,
     )
 
 

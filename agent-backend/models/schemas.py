@@ -317,3 +317,52 @@ class IngestResponse(BaseModel):
     ingested_files: int
     total_chunks:   int
     detail:         dict[str, int]
+
+
+# ── Post-execution part report (mirrors C# OperationExecutor.ExtractPartReport) ─
+
+class BoundingBox(BaseModel):
+    x_mm: float
+    y_mm: float
+    z_mm: float
+
+
+class PartFeatureInfo(BaseModel):
+    name:       str
+    type:       str
+    suppressed: bool = False
+
+
+class PartReport(BaseModel):
+    body_count:    int
+    bounding_box:  Optional[BoundingBox]    = None
+    mass_g:        Optional[float]          = None
+    feature_count: int                      = 0
+    features:      List[PartFeatureInfo]    = Field(default_factory=list)
+
+
+# ── Validation report (graph requested vs. report produced) ───────────────────
+
+class Discrepancy(BaseModel):
+    category: Literal[
+        "bounding_box", "body_count", "feature_count",
+        "missing_feature", "unexpected_feature", "suppressed_feature",
+    ]
+    severity: Literal["info", "warning", "error"]
+    expected: str
+    actual:   str
+    message:  str
+
+
+class ValidationReport(BaseModel):
+    passed:           bool
+    has_warnings:     bool
+    discrepancies:    List[Discrepancy] = Field(default_factory=list)
+    expected_summary: dict              = Field(default_factory=dict)
+    actual_summary:   dict              = Field(default_factory=dict)
+
+
+class ValidateRequest(BaseModel):
+    operation_graph: OperationGraph
+    part_report:     PartReport
+    tolerance_mm:    float = 1.0

@@ -28,6 +28,14 @@ namespace SwCopilotAddin.UI
         private readonly TextBox _input;
         private readonly Button _sendButton;
         private readonly Button _undoButton;
+        private string? _lastOperationRuntimeForHistory;
+
+        private const int MaxAutoRepairAttempts = 2;
+        private static readonly bool AllowLegacyMacroFallback =
+            string.Equals(
+                System.Environment.GetEnvironmentVariable("SW_COPILOT_ALLOW_LEGACY_MACROS"),
+                "1",
+                StringComparison.Ordinal);
 
         public TaskPaneHost(ISldWorks swApp)
         {
@@ -160,6 +168,7 @@ namespace SwCopilotAddin.UI
             SetStatus("Contacting agent...");
             _sendButton.Enabled = false;
             _undoButton.Enabled = false;
+            _lastOperationRuntimeForHistory = null;
 
             try
             {
@@ -170,32 +179,10 @@ namespace SwCopilotAddin.UI
 
                 if (response.OperationGraph != null)
                 {
-                    OperationGraphDto graph = response.OperationGraph;
-                    string preview = FormatOperationPlan(graph, response.StatusMessage);
-
-                    SetStatus("Review operation plan...");
-                    using (var dlg = new MacroPreviewDialog(preview, response.StatusMessage))
-                    {
-                        if (dlg.ShowDialog(this) != DialogResult.OK)
-                        {
-                            SetStatus("Ready");
-                            AppendMessage("Runtime", "Execution cancelled by user.");
-                            return;
-                        }
-                    }
-
-                    if (graph.MissingInputs != null && graph.MissingInputs.Length > 0)
-                    {
-                        string ask = "Please provide:\n• " + string.Join("\n• ", graph.MissingInputs);
-                        SetStatus("Needs clarification");
-                        AppendMessage("Agent", ask);
+                    AgentResponse? executedResponse = await ExecuteOperationGraphWithRepairAsync(prompt, ctx, response);
+                    if (executedResponse == null)
                         return;
-                    }
-
-                    SetStatus("Executing operation plan...");
-                    string result = _operationExecutor.Execute(graph);
-                    SetStatus(result.Contains("ERROR") ? "Error — see message above" : "Done");
-                    AppendMessage("Runtime", result);
+                    response = executedResponse;
                 }
                 else if (response.CadCommand.HasValue)
                 {
@@ -222,24 +209,33 @@ namespace SwCopilotAddin.UI
                 }
                 else if (!string.IsNullOrEmpty(response.MacroCode))
                 {
-                    SetStatus("Waiting for macro review...");
-                    string macroCode = response.MacroCode!;
-                    using (var preview = new MacroPreviewDialog(macroCode, response.StatusMessage))
+                    if (!AllowLegacyMacroFallback)
                     {
-                        if (preview.ShowDialog(this) != DialogResult.OK)
-                        {
-                            const string cancelled = "Execution cancelled by user. Macro was not run.";
-                            SetStatus("Ready");
-                            AppendMessage("Runtime", cancelled);
-                            return;
-                        }
+                        const string blocked = "Blocked legacy macro response. This build only executes validated operation_graph JSON. Set SW_COPILOT_ALLOW_LEGACY_MACROS=1 to re-enable the Roslyn fallback for local development.";
+                        SetStatus("Blocked legacy macro");
+                        AppendMessage("Runtime", blocked);
                     }
+                    else
+                    {
+                        SetStatus("Waiting for macro review...");
+                        string macroCode = response.MacroCode!;
+                        using (var preview = new MacroPreviewDialog(macroCode, response.StatusMessage))
+                        {
+                            if (preview.ShowDialog(this) != DialogResult.OK)
+                            {
+                                const string cancelled = "Execution cancelled by user. Macro was not run.";
+                                SetStatus("Ready");
+                                AppendMessage("Runtime", cancelled);
+                                return;
+                            }
+                        }
 
-                    SetStatus("Executing macro...");
-                    var executor = new MacroExecutor(_swApp);
-                    string result = executor.Execute(macroCode);
-                    SetStatus(result);
-                    AppendMessage("Runtime", result);
+                        SetStatus("Executing macro...");
+                        var executor = new MacroExecutor(_swApp);
+                        string result = executor.Execute(macroCode);
+                        SetStatus(result);
+                        AppendMessage("Runtime", result);
+                    }
                 }
                 else
                 {
@@ -251,6 +247,8 @@ namespace SwCopilotAddin.UI
                 string assistantContent = response.StatusMessage;
                 if (response.OperationGraph != null)
                     assistantContent += "\n" + JsonConvert.SerializeObject(response.OperationGraph);
+                if (!string.IsNullOrWhiteSpace(_lastOperationRuntimeForHistory))
+                    assistantContent += "\nRuntime:\n" + _lastOperationRuntimeForHistory;
                 _history.Add(new ConversationMessage("assistant", assistantContent));
             }
             catch (Exception ex)
@@ -264,6 +262,159 @@ namespace SwCopilotAddin.UI
                 _undoButton.Enabled = true;
                 _input.Focus();
             }
+        }
+
+        private async Task<AgentResponse?> ExecuteOperationGraphWithRepairAsync(
+            string prompt,
+            DocumentContext ctx,
+            AgentResponse initialResponse)
+        {
+            AgentResponse currentResponse = initialResponse;
+            var repairHistory = new List<ConversationMessage>(_history)
+            {
+                new ConversationMessage("user", prompt),
+            };
+
+            for (int repairAttempt = 0; ; repairAttempt++)
+            {
+                OperationGraphDto? graph = currentResponse.OperationGraph;
+                if (graph == null)
+                {
+                    const string noGraph = "ERROR: Repair response did not include an operation_graph. Execution stopped.";
+                    SetStatus("Error - see message above");
+                    AppendMessage("Runtime", noGraph);
+                    _lastOperationRuntimeForHistory = noGraph;
+                    return currentResponse;
+                }
+
+                string preview = FormatOperationPlan(graph, currentResponse.StatusMessage);
+                SetStatus(repairAttempt == 0
+                    ? "Review operation plan..."
+                    : $"Review repaired plan ({repairAttempt}/{MaxAutoRepairAttempts})...");
+
+                using (var dlg = new MacroPreviewDialog(preview, currentResponse.StatusMessage))
+                {
+                    if (dlg.ShowDialog(this) != DialogResult.OK)
+                    {
+                        SetStatus("Ready");
+                        AppendMessage("Runtime", "Execution cancelled by user.");
+                        return null;
+                    }
+                }
+
+                if (graph.MissingInputs != null && graph.MissingInputs.Length > 0)
+                {
+                    string ask = "Please provide:\n• " + string.Join("\n• ", graph.MissingInputs);
+                    SetStatus("Needs clarification");
+                    AppendMessage("Agent", ask);
+                    return null;
+                }
+
+                SetStatus(repairAttempt == 0
+                    ? "Executing operation plan..."
+                    : $"Executing repaired plan ({repairAttempt}/{MaxAutoRepairAttempts})...");
+
+                string result = _operationExecutor.Execute(graph);
+                _lastOperationRuntimeForHistory = result;
+                AppendMessage("Runtime", result);
+
+                repairHistory.Add(new ConversationMessage(
+                    "assistant",
+                    BuildAssistantHistoryContent(currentResponse, result)));
+
+                if (!IsRepairableExecutionFailure(result))
+                {
+                    string validationStatus = await ValidateExecutionResultAsync(graph, result);
+                    SetStatus(validationStatus);
+                    return currentResponse;
+                }
+
+                if (repairAttempt >= MaxAutoRepairAttempts)
+                {
+                    SetStatus("Error - auto-repair exhausted");
+                    AppendMessage("Agent", $"Automatic repair stopped after {MaxAutoRepairAttempts} failed attempts.");
+                    return currentResponse;
+                }
+
+                int nextAttempt = repairAttempt + 1;
+                SetStatus($"Requesting repair {nextAttempt}/{MaxAutoRepairAttempts}...");
+                AppendMessage("Agent", $"Execution failed. Requesting automatic repair {nextAttempt}/{MaxAutoRepairAttempts}...");
+                currentResponse = await _client.SendPromptAsync(prompt, ctx, repairHistory);
+                AppendMessage("Agent", currentResponse.StatusMessage);
+            }
+        }
+
+        private static bool IsRepairableExecutionFailure(string result)
+        {
+            return result.IndexOf("ERROR:", StringComparison.OrdinalIgnoreCase) >= 0
+                   || result.IndexOf("RULE VIOLATION", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static string BuildAssistantHistoryContent(AgentResponse response, string runtimeResult)
+        {
+            string content = response.StatusMessage;
+            if (response.OperationGraph != null)
+                content += "\n" + JsonConvert.SerializeObject(response.OperationGraph);
+            return content + "\nRuntime:\n" + runtimeResult;
+        }
+
+        private async Task<string> ValidateExecutionResultAsync(OperationGraphDto graph, string runtimeResult)
+        {
+            string? partReportJson = ExtractPartReportJson(runtimeResult);
+            if (string.IsNullOrWhiteSpace(partReportJson))
+                return "Done";
+
+            try
+            {
+                ValidationResponse validation = await _client.ValidateOperationAsync(graph, partReportJson!);
+                AppendMessage("Validation", FormatValidationReport(validation));
+
+                if (!validation.Passed)
+                    return "Done - validation errors";
+                return validation.HasWarnings ? "Done - validation warnings" : "Done";
+            }
+            catch (Exception ex)
+            {
+                AppendMessage("Validation", "Validation skipped: " + ex.Message);
+                return "Done - validation skipped";
+            }
+        }
+
+        private static string? ExtractPartReportJson(string runtimeResult)
+        {
+            const string marker = "Runtime (report): ";
+            string[] lines = runtimeResult.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+            foreach (string line in lines)
+            {
+                if (line.StartsWith(marker, StringComparison.Ordinal))
+                    return line.Substring(marker.Length).Trim();
+            }
+
+            return null;
+        }
+
+        private static string FormatValidationReport(ValidationResponse validation)
+        {
+            if (validation.Passed && !validation.HasWarnings)
+                return "Passed. SolidWorks part report matches the requested operation graph within tolerance.";
+
+            var sb = new StringBuilder();
+            sb.AppendLine(validation.Passed ? "Passed with warnings." : "Failed.");
+
+            foreach (ValidationDiscrepancy discrepancy in validation.Discrepancies ?? System.Array.Empty<ValidationDiscrepancy>())
+            {
+                sb.AppendLine(
+                    $"[{discrepancy.Severity}] {discrepancy.Category}: {discrepancy.Message}");
+
+                if (!string.IsNullOrWhiteSpace(discrepancy.Expected) ||
+                    !string.IsNullOrWhiteSpace(discrepancy.Actual))
+                {
+                    sb.AppendLine($"  expected: {discrepancy.Expected}");
+                    sb.AppendLine($"  actual:   {discrepancy.Actual}");
+                }
+            }
+
+            return sb.ToString().TrimEnd();
         }
 
         private void RollbackLastExecute()
