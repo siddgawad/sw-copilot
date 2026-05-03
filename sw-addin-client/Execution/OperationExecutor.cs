@@ -179,7 +179,7 @@ namespace SwCopilotAddin.Execution
                     case "hole_wizard":
                         if (op.Positions == null || op.Positions.Length == 0)
                             violations.AppendLine($"[{op.Id}] hole_wizard requires at least one position.");
-                        // Sanity-check: clearance hole radius must not exceed any plausible part face.
+                        ValidateHolePatternGeometry(op, violations);
                         break;
 
                     case "circular_pattern":
@@ -212,6 +212,42 @@ namespace SwCopilotAddin.Execution
 
             string result = violations.ToString().Trim();
             return string.IsNullOrEmpty(result) ? null : result;
+        }
+
+        private static void ValidateHolePatternGeometry(OperationDto op, StringBuilder violations)
+        {
+            HolePositionDto[] positions = op.Positions ?? System.Array.Empty<HolePositionDto>();
+            if (positions.Length == 0)
+                return;
+
+            string fastenerSize = op.FastenerSize ?? "M6";
+            string holeType = op.HoleType ?? "simple";
+            double holeDiameterMm = HoleDiameterMm(fastenerSize, holeType);
+
+            for (int i = 0; i < positions.Length; i++)
+            {
+                HolePositionDto a = positions[i];
+                if (double.IsNaN(a.XMm) || double.IsNaN(a.YMm) ||
+                    double.IsInfinity(a.XMm) || double.IsInfinity(a.YMm))
+                {
+                    violations.AppendLine($"[{op.Id}] hole position {i + 1} has invalid coordinates.");
+                }
+
+                for (int j = i + 1; j < positions.Length; j++)
+                {
+                    HolePositionDto b = positions[j];
+                    double dx = a.XMm - b.XMm;
+                    double dy = a.YMm - b.YMm;
+                    double spacing = Math.Sqrt(dx * dx + dy * dy);
+                    if (spacing + 0.01 < holeDiameterMm)
+                    {
+                        violations.AppendLine(
+                            $"[{op.Id}] hole positions {i + 1} and {j + 1} overlap: " +
+                            $"center spacing {spacing:0.###} mm is less than required " +
+                            $"{holeDiameterMm:0.###} mm for {fastenerSize} {holeType}.");
+                    }
+                }
+            }
         }
 
         // ── Dispatcher ────────────────────────────────────────────────────────

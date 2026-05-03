@@ -7,7 +7,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from groq import APIConnectionError, APIError, APIStatusError, APITimeoutError
 from starlette.concurrency import run_in_threadpool
 
-from agents.macro_engineer import MacroEngineerAgent
+from agents.macro_engineer import MacroEngineerAgent, try_fast_path_clarification
 from agents.rag_agent import RagAgent
 from agents.validation_agent import validate as validate_graph_against_report
 from models.schemas import (
@@ -119,6 +119,16 @@ async def generate(req: GenerateRequest) -> GenerateResponse:
         raise HTTPException(status_code=503, detail="Agents not yet initialised.")
 
     sanitized_context = _sanitize_context(req.context)
+
+    fast_path_graph = try_fast_path_clarification(req.prompt, req.messages)
+    if fast_path_graph is not None:
+        return GenerateResponse(
+            macro_code=None,
+            cad_command=None,
+            operation_graph=fast_path_graph,
+            status_message="Clarification needed — see missing inputs before executing.",
+            rag_sources=[],
+        )
 
     rag_context, rag_sources = "", []
     if rag_agent.is_relevant(req.prompt):

@@ -6,13 +6,20 @@ from groq import APIStatusError, Groq
 from pydantic import ValidationError
 
 from config import settings
-from models.schemas import ConversationMessage, DocumentContext, OperationGraph
+from models.schemas import ConversationMessage, DocumentContext, NoopOp, OperationGraph
 from standards.dimension_resolver import build_standards_context
 
 _MAX_HISTORY_MESSAGES = 8
 _MAX_HISTORY_CHARS = 3000
 _LLM_MAX_TOKENS = 1536
 _MAX_RATE_LIMIT_RETRIES = 2
+_HOLE_REQUEST = re.compile(r"\b(hole|holes|counterbore|counterbored|countersink|tap|tapped)\b", re.IGNORECASE)
+_TOP_FACE_REQUEST = re.compile(r"\b(top|upper|face|surface)\b", re.IGNORECASE)
+_EXPLICIT_ROUND_PATTERN = re.compile(
+    r"\b(pcd|bolt\s+circle|pitch\s+circle|center|centre|concentric|x\s*=|y\s*=|"
+    r"offset|position|positions|located|diameter\s+circle)\b",
+    re.IGNORECASE,
+)
 
 
 _SYSTEM_PROMPT = """\
@@ -234,6 +241,51 @@ Output:
 """
 
 
+_COMPACT_SYSTEM_PROMPT = """\
+You are SW Copilot's CAD planner for SolidWorks 2021.
+Return exactly one JSON object matching OperationGraph. No markdown, prose, code, or comments.
+
+OperationGraph:
+{"part_name":string|null,"reasoning":string|null,"missing_inputs":[string],"assumptions":[string],"operations":[Operation]}
+
+Operation types:
+- sketch: {"id":str,"type":"sketch","plane":"Top Plane|Front Plane|Right Plane|<feature_id> top","entities":[rectangle|circle|line],"named_dims":[{"name":str,"value_mm":num}]}
+- rectangle entity: {"type":"rectangle","x1_mm":num,"y1_mm":num,"x2_mm":num,"y2_mm":num}
+- circle entity: {"type":"circle","cx_mm":num,"cy_mm":num,"radius_mm":num}
+- line entity: {"type":"line","x1_mm":num,"y1_mm":num,"x2_mm":num,"y2_mm":num}
+- extrude_boss: {"id":str,"type":"extrude_boss","profile_id":str,"depth_mm":num,"name":str|null}
+- extrude_cut: {"id":str,"type":"extrude_cut","profile_id":str,"through_all":bool,"depth_mm":num}
+- hole_wizard: {"id":str,"type":"hole_wizard","face_of":str,"hole_type":"simple|counterbore|countersink|tapped","fastener_size":"M3|M4|M5|M6|M8|M10|M12","through_all":bool,"depth_mm":num,"positions":[{"x_mm":num,"y_mm":num}]}
+- fillet/chamfer: use feature_ids; empty feature_ids means all user features.
+- circular_pattern: {"id":str,"type":"circular_pattern","source_ids":[str],"count":int,"pcd_mm":num}
+- linear_pattern, mirror, revolve, delete_feature, noop are allowed only when clearly requested.
+
+Rules:
+1. All dimensions are millimetres. Convert units before output.
+2. Center base sketches at the origin unless the user says otherwise.
+3. Every profile_id, face_of, and source_ids entry must reference an earlier op id or a prior-history op id.
+4. Use unique operation ids: sk1, f1, h1, fi1, d1, etc.
+5. Use RESOLVED STANDARDS DATA exactly for ISO fastener dimensions. Do not invent standard sizes.
+6. M6 counterbore means clearance 6.6mm and counterbore diameter 11.0mm when standards context says so.
+7. "extrude it" references the most recent sketch id from history.
+8. Cylinders/shafts use a circle on Front Plane and extrude along depth.
+9. Rectangular corner holes require explicit or derived rectangle dimensions; compute concrete x/y positions.
+10. Cylinders/round top faces have no corners. Multiple top holes require PCD/bolt-circle diameter or explicit x/y positions. If missing, output only noop with missing_inputs asking for PCD/positions.
+11. Do not output overlapping holes. Center spacing must be at least the largest cutting diameter.
+12. If a critical input is truly missing, output noop as the only operation.
+13. Delete requests output delete_feature, not noop.
+
+Output only valid JSON.
+"""
+
+
+_COMPACT_REPAIR_ADDENDUM = """
+REPAIR MODE - execution error detected.
+Read the latest ERROR in conversation history and output a corrected OperationGraph.
+Do not repeat the same failing operation. If the error shows impossible geometry or missing design intent, output noop with missing_inputs instead of guessing.
+"""
+
+
 _REPAIR_ADDENDUM = """
 ════════════════════════════════════════
 REPAIR MODE — execution error detected
@@ -277,6 +329,50 @@ def _trim_history(history: list[ConversationMessage] | None) -> list[Conversatio
             content = content[:_MAX_HISTORY_CHARS] + "\n... [history truncated]"
         trimmed.append(ConversationMessage(role=msg.role, content=content))
     return trimmed
+
+
+def _history_mentions_cylinder(history: list[ConversationMessage] | None) -> bool:
+    if not history:
+        return False
+    recent = "\n".join(msg.content for msg in history[-_MAX_HISTORY_MESSAGES:])
+    return bool(re.search(
+        r"\b(part_name\"?\s*:\s*\"?cylinder|Part:\s*cylinder|cylinder|shaft)\b",
+        recent,
+        re.IGNORECASE,
+    ))
+
+
+def try_fast_path_clarification(
+    prompt: str,
+    conversation_history: list[ConversationMessage] | None = None,
+) -> OperationGraph | None:
+    """
+    Deterministic ambiguity gate. Avoid spending an LLM call when a request is
+    known-underconstrained for reliable CAD execution.
+    """
+    if not _history_mentions_cylinder(conversation_history):
+        return None
+
+    if not _HOLE_REQUEST.search(prompt) or not _TOP_FACE_REQUEST.search(prompt):
+        return None
+
+    asks_multiple = bool(re.search(r"\b(two|three|four|five|six|[2-9])\b", prompt, re.IGNORECASE))
+    if not asks_multiple:
+        return None
+
+    if _EXPLICIT_ROUND_PATTERN.search(prompt):
+        return None
+
+    message = (
+        "A circular top face has no corners. Provide a bolt-circle diameter "
+        "(PCD) or explicit x/y hole positions for the hole pattern."
+    )
+    return OperationGraph(
+        part_name="cylinder",
+        missing_inputs=["bolt-circle diameter (PCD) or explicit x/y hole positions"],
+        assumptions=[],
+        operations=[NoopOp(id="noop1", message=message)],
+    )
 
 
 def _build_context_block(ctx: DocumentContext, rag_context: str = "") -> str:
@@ -345,8 +441,8 @@ def build_system_prompt(
     """Return the system prompt, with the repair addendum appended when the
     previous assistant turn contains an execution error."""
     if _has_execution_error(conversation_history):
-        return _SYSTEM_PROMPT + _REPAIR_ADDENDUM
-    return _SYSTEM_PROMPT
+        return _COMPACT_SYSTEM_PROMPT + _COMPACT_REPAIR_ADDENDUM
+    return _COMPACT_SYSTEM_PROMPT
 
 
 class MacroEngineerAgent:

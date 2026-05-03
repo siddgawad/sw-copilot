@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agents.macro_engineer import build_system_prompt, build_user_message
+from agents.macro_engineer import build_system_prompt, build_user_message, try_fast_path_clarification
 from agents.rag_agent import RagAgent, _RAG_OUTPUT_CHAR_CAP
 from models.schemas import ConversationMessage, DocumentContext
 from standards.dimension_resolver import build_standards_context
@@ -75,6 +75,41 @@ def test_repair_addendum_ignores_stale_error_if_latest_assistant_succeeded():
     ])
 
     assert "REPAIR MODE" not in system
+
+
+def test_round_top_hole_pattern_without_pcd_fast_paths_to_clarification():
+    history = [
+        ConversationMessage(
+            role="assistant",
+            content=(
+                'OperationGraph:\n{"part_name":"cylinder","operations":[{"id":"f1",'
+                '"type":"extrude_boss","depth_mm":30}]}\n'
+                "Runtime:\nPartReport: body_count=1; bbox_mm=30 x 30 x 30"
+            ),
+        ),
+    ]
+
+    graph = try_fast_path_clarification(
+        "add four M6 counterbore holes at the top",
+        history,
+    )
+
+    assert graph is not None
+    assert graph.operations[0].type == "noop"
+    assert "PCD" in graph.missing_inputs[0]
+
+
+def test_round_top_hole_pattern_with_pcd_goes_to_llm():
+    history = [
+        ConversationMessage(role="assistant", content='{"part_name":"cylinder"}'),
+    ]
+
+    graph = try_fast_path_clarification(
+        "add four M6 counterbore holes on a 20mm PCD at the top",
+        history,
+    )
+
+    assert graph is None
 
 
 class _FakeStore:

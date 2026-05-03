@@ -349,8 +349,13 @@ namespace SwCopilotAddin.UI
 
         private static bool IsRepairableExecutionFailure(string result)
         {
-            return result.IndexOf("ERROR:", StringComparison.OrdinalIgnoreCase) >= 0
-                   || result.IndexOf("RULE VIOLATION", StringComparison.OrdinalIgnoreCase) >= 0;
+            if (result.IndexOf("RULE VIOLATION", StringComparison.OrdinalIgnoreCase) >= 0)
+                return false;
+
+            if (result.IndexOf("ERROR: Hole cut failed", StringComparison.OrdinalIgnoreCase) >= 0)
+                return false;
+
+            return result.IndexOf("ERROR:", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private static string BuildAssistantHistoryContent(AgentResponse response, string? runtimeResult = null)
