@@ -1,10 +1,12 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Globalization;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using SolidWorks.Interop.sldworks;
 using SwCopilotAddin.Client;
 using SwCopilotAddin.Execution;
@@ -31,6 +33,9 @@ namespace SwCopilotAddin.UI
         private string? _lastOperationRuntimeForHistory;
 
         private const int MaxAutoRepairAttempts = 2;
+        private const int MaxHistoryMessages = 8;
+        private const int MaxHistoryContentChars = 3000;
+        private const int MaxRuntimeHistoryChars = 1400;
         private static readonly bool AllowLegacyMacroFallback =
             string.Equals(
                 System.Environment.GetEnvironmentVariable("SW_COPILOT_ALLOW_LEGACY_MACROS"),
@@ -244,12 +249,10 @@ namespace SwCopilotAddin.UI
 
                 // Record the exchange so subsequent prompts have dimension context.
                 _history.Add(new ConversationMessage("user", prompt));
-                string assistantContent = response.StatusMessage;
-                if (response.OperationGraph != null)
-                    assistantContent += "\n" + JsonConvert.SerializeObject(response.OperationGraph);
-                if (!string.IsNullOrWhiteSpace(_lastOperationRuntimeForHistory))
-                    assistantContent += "\nRuntime:\n" + _lastOperationRuntimeForHistory;
-                _history.Add(new ConversationMessage("assistant", assistantContent));
+                _history.Add(new ConversationMessage(
+                    "assistant",
+                    BuildAssistantHistoryContent(response, _lastOperationRuntimeForHistory)));
+                PruneHistory();
             }
             catch (Exception ex)
             {
@@ -350,12 +353,110 @@ namespace SwCopilotAddin.UI
                    || result.IndexOf("RULE VIOLATION", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
-        private static string BuildAssistantHistoryContent(AgentResponse response, string runtimeResult)
+        private static string BuildAssistantHistoryContent(AgentResponse response, string? runtimeResult = null)
         {
-            string content = response.StatusMessage;
+            var sb = new StringBuilder();
+            if (!string.IsNullOrWhiteSpace(response.StatusMessage))
+                sb.AppendLine(response.StatusMessage.Trim());
+
             if (response.OperationGraph != null)
-                content += "\n" + JsonConvert.SerializeObject(response.OperationGraph);
-            return content + "\nRuntime:\n" + runtimeResult;
+            {
+                sb.AppendLine("OperationGraph:");
+                sb.AppendLine(JsonConvert.SerializeObject(response.OperationGraph, Formatting.None));
+            }
+
+            string runtimeSummary = BuildRuntimeHistorySummary(runtimeResult);
+            if (!string.IsNullOrWhiteSpace(runtimeSummary))
+            {
+                sb.AppendLine("Runtime:");
+                sb.AppendLine(runtimeSummary);
+            }
+
+            return TrimForHistory(sb.ToString().TrimEnd(), MaxHistoryContentChars);
+        }
+
+        private static string BuildRuntimeHistorySummary(string? runtimeResult)
+        {
+            if (string.IsNullOrWhiteSpace(runtimeResult))
+                return string.Empty;
+
+            string nonNullRuntime = runtimeResult!;
+            string visibleRuntime = RemovePartReportLine(nonNullRuntime).Trim();
+            string? reportJson = ExtractPartReportJson(nonNullRuntime);
+            string reportSummary = FormatPartReportSummary(reportJson);
+
+            if (IsRepairableExecutionFailure(nonNullRuntime))
+                return TrimForHistory(visibleRuntime, MaxRuntimeHistoryChars);
+
+            var sb = new StringBuilder();
+            if (!string.IsNullOrWhiteSpace(visibleRuntime))
+                sb.AppendLine(TrimForHistory(visibleRuntime, MaxRuntimeHistoryChars));
+            if (!string.IsNullOrWhiteSpace(reportSummary))
+                sb.AppendLine(reportSummary);
+
+            return sb.ToString().TrimEnd();
+        }
+
+        private static string RemovePartReportLine(string runtimeResult)
+        {
+            const string marker = "Runtime (report): ";
+            var sb = new StringBuilder();
+            string[] lines = runtimeResult.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+            foreach (string line in lines)
+            {
+                if (!line.StartsWith(marker, StringComparison.Ordinal))
+                    sb.AppendLine(line);
+            }
+            return sb.ToString().TrimEnd();
+        }
+
+        private static string FormatPartReportSummary(string? partReportJson)
+        {
+            if (string.IsNullOrWhiteSpace(partReportJson))
+                return string.Empty;
+
+            string nonNullJson = partReportJson!;
+            try
+            {
+                JObject report = JObject.Parse(nonNullJson);
+                string bodyCount = report["body_count"]?.ToString() ?? "?";
+                string featureCount = report["feature_count"]?.ToString() ?? "?";
+                JObject? bbox = report["bounding_box"] as JObject;
+                string bboxText = "none";
+                if (bbox != null)
+                {
+                    bboxText =
+                        $"{FormatMm(bbox["x_mm"])} x {FormatMm(bbox["y_mm"])} x {FormatMm(bbox["z_mm"])}";
+                }
+
+                return $"PartReport: body_count={bodyCount}; bbox_mm={bboxText}; feature_count={featureCount}";
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
+        private static string FormatMm(JToken? value)
+        {
+            double? number = value?.Value<double?>();
+            return number.HasValue
+                ? number.Value.ToString("0.###", CultureInfo.InvariantCulture)
+                : "?";
+        }
+
+        private static string TrimForHistory(string value, int maxChars)
+        {
+            if (value.Length <= maxChars)
+                return value;
+            return value.Substring(0, maxChars) + "\n... [history truncated]";
+        }
+
+        private void PruneHistory()
+        {
+            int excess = _history.Count - MaxHistoryMessages;
+            if (excess > 0)
+                _history.RemoveRange(0, excess);
         }
 
         private async Task<string> ValidateExecutionResultAsync(OperationGraphDto graph, string runtimeResult)

@@ -1,11 +1,18 @@
 import json
+import re
+import time
 
-from groq import Groq
+from groq import APIStatusError, Groq
 from pydantic import ValidationError
 
 from config import settings
 from models.schemas import ConversationMessage, DocumentContext, OperationGraph
 from standards.dimension_resolver import build_standards_context
+
+_MAX_HISTORY_MESSAGES = 8
+_MAX_HISTORY_CHARS = 3000
+_LLM_MAX_TOKENS = 1536
+_MAX_RATE_LIMIT_RETRIES = 2
 
 
 _SYSTEM_PROMPT = """\
@@ -255,6 +262,23 @@ def _has_execution_error(history: list[ConversationMessage] | None) -> bool:
     return False
 
 
+def _trim_history(history: list[ConversationMessage] | None) -> list[ConversationMessage]:
+    """
+    Server-side defense against old add-in builds or custom clients sending
+    full runtime reports. Keep the latest turns and cap each message.
+    """
+    if not history:
+        return []
+
+    trimmed: list[ConversationMessage] = []
+    for msg in history[-_MAX_HISTORY_MESSAGES:]:
+        content = msg.content
+        if len(content) > _MAX_HISTORY_CHARS:
+            content = content[:_MAX_HISTORY_CHARS] + "\n... [history truncated]"
+        trimmed.append(ConversationMessage(role=msg.role, content=content))
+    return trimmed
+
+
 def _build_context_block(ctx: DocumentContext, rag_context: str = "") -> str:
     lines = [
         f"Active Document Type : {ctx.document_type}",
@@ -281,6 +305,20 @@ def _extract_json_object(content: str) -> dict:
         raise ValueError("LLM response did not contain a JSON object.")
 
     return json.loads(text[start:end + 1])
+
+
+def _rate_limit_delay_seconds(exc: APIStatusError) -> float:
+    retry_after = exc.response.headers.get("retry-after")
+    if retry_after:
+        try:
+            return min(max(float(retry_after), 0.5), 8.0)
+        except ValueError:
+            pass
+
+    match = re.search(r"try again in\s+([0-9.]+)s", exc.response.text, re.IGNORECASE)
+    if match:
+        return min(max(float(match.group(1)) + 0.25, 0.5), 8.0)
+    return 1.5
 
 
 def build_user_message(
@@ -322,6 +360,7 @@ class MacroEngineerAgent:
         rag_context: str = "",
         conversation_history: list[ConversationMessage] | None = None,
     ) -> OperationGraph:
+        conversation_history = _trim_history(conversation_history)
         user_message = build_user_message(prompt, ctx, rag_context)
         system = build_system_prompt(conversation_history)
         messages: list[dict] = [{"role": "system", "content": system}]
@@ -334,13 +373,21 @@ class MacroEngineerAgent:
 
         last_error: Exception | None = None
         for attempt in range(2):
-            completion = self._client.chat.completions.create(
-                model=settings.groq_model,
-                messages=messages,
-                temperature=0.0,
-                max_tokens=3072,
-                response_format={"type": "json_object"},
-            )
+            for rate_attempt in range(_MAX_RATE_LIMIT_RETRIES + 1):
+                try:
+                    completion = self._client.chat.completions.create(
+                        model=settings.groq_model,
+                        messages=messages,
+                        temperature=0.0,
+                        max_tokens=_LLM_MAX_TOKENS,
+                        response_format={"type": "json_object"},
+                    )
+                    break
+                except APIStatusError as exc:
+                    if exc.status_code != 429 or rate_attempt >= _MAX_RATE_LIMIT_RETRIES:
+                        raise
+                    time.sleep(_rate_limit_delay_seconds(exc))
+
             content = completion.choices[0].message.content or ""
             try:
                 return OperationGraph.model_validate(_extract_json_object(content))

@@ -119,6 +119,7 @@ Latest Codex validation on 2026-05-03:
 - C# repair-loop build on 2026-05-03: `Release-beta4`, 0 warnings, 0 errors.
 - Beta package build on 2026-05-03 succeeded: `artifacts\sw-copilot-beta.zip` (112,088,812 bytes). SHA-256 `5F5D4BE93065CF988F0FBA020F892CB0090A84444F05F0471FA6F10433668967`. Packaged backend `/version` smoke check passed on port 8002 with `vector_docs=37`; packaged `/validate` smoke passed with `passed=true`.
 - Sanitizer hardening on 2026-05-03: C# strips full paths to filenames before context upload; C# and Python both remove newlines/backticks/control chars and redact injection markers. Backend sanitizer tests: `19 passed`; full security suite: `53 passed, 1 skipped`; smoke test: `10 passed, 1 skipped, 0 failed` (LLM rate-limit skip).
+- Validation/context-budget hotfix on 2026-05-03: sketch-only/noop/delete-only graphs no longer fail validation for `body_count=0`; TaskPaneHost and BackendClient now cap history to 8 messages / 3000 chars and store compact runtime summaries instead of full PartReport feature trees; backend trims history defensively, caps RAG to 2 chunks / 2500 chars, lowers Groq max output tokens to 1536, and retries short 429 rate-limit responses twice. Backend tests: `139 passed`. C# build: `Release-beta5`, 0 warnings, 0 errors. New side-by-side beta package: `artifacts\sw-copilot-beta5.zip` (112,091,851 bytes). SHA-256 `A6A19E10AB9AFB33B14F473D00EBFD77B1E4FE65BC75C191C7FA6BEF5169A258`; packaged `/version` smoke passed on port 8002 with `vector_docs=37`.
 
 ### Backend (Python) â€” needs uvicorn restart to pick up latest changes
 
@@ -189,6 +190,8 @@ Output: `artifacts\sw-copilot-beta.zip`.
 **Live testing status:**
 - âœ… Box creation works (sketch + extrude_boss)
 - âš ï¸ Hole wizard follow-up ("add four M5 counterbore holes at the corners") â€” plane resolution fixed, needs re-test after rebuild
+- âœ… Sketch-only request behavior fixed in code/tests: `make a circle 30mm` should validate as a sketch with no solid body, not as a failed extrude. Needs live SolidWorks re-test on beta5.
+- âš ï¸ Groq TPM spike after follow-up commands mitigated: C# no longer sends full runtime feature-tree reports in history; backend RAG/history/output budgets reduced. For global launch, this still requires a real hosted inference/billing strategy rather than one shared Groq on-demand key.
 - âŒ Not yet tested: fillet, chamfer, circular_pattern, linear_pattern, mirror, revolve, delete_feature
 
 ---

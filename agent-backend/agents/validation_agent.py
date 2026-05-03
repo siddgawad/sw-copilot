@@ -94,6 +94,26 @@ def _expected_feature_count_lower_bound(graph: OperationGraph) -> int:
     return sum(1 for op in graph.operations if op.type in countable)
 
 
+def _expects_solid_after_execution(graph: OperationGraph) -> bool:
+    """
+    Return True only for operation graphs that should leave at least one solid
+    body in the document. Sketch-only, noop-only, and delete-only graphs are
+    valid non-solid outputs and must not be treated as failed extrudes.
+    """
+    solid_relevant = {
+        "extrude_boss",
+        "extrude_cut",
+        "fillet",
+        "chamfer",
+        "hole_wizard",
+        "circular_pattern",
+        "linear_pattern",
+        "mirror",
+        "revolve",
+    }
+    return any(op.type in solid_relevant for op in graph.operations)
+
+
 def _bbox_matches(a: BoundingBox, b: BoundingBox, tol: float) -> bool:
     return (
         abs(a.x_mm - b.x_mm) <= tol
@@ -140,24 +160,28 @@ def validate(
                 ),
             ))
 
-    # 2. Body count sanity. Most graphs should produce exactly one solid body.
-    expected_summary["body_count"] = 1
-    if report.body_count == 0:
-        discrepancies.append(Discrepancy(
-            category="body_count",
-            severity="error",
-            expected="1",
-            actual="0",
-            message="No solid body present — extrude likely failed.",
-        ))
-    elif report.body_count > 1:
-        discrepancies.append(Discrepancy(
-            category="body_count",
-            severity="warning",
-            expected="1",
-            actual=str(report.body_count),
-            message="Multiple bodies present — operations may not have merged.",
-        ))
+    # 2. Body count sanity. Only enforce this for graphs that should create or
+    # modify a solid. A standalone sketch is a valid user request.
+    if _expects_solid_after_execution(graph):
+        expected_summary["body_count"] = ">= 1"
+        if report.body_count == 0:
+            discrepancies.append(Discrepancy(
+                category="body_count",
+                severity="error",
+                expected=">= 1",
+                actual="0",
+                message="No solid body present - solid-producing operation likely failed.",
+            ))
+        elif report.body_count > 1:
+            discrepancies.append(Discrepancy(
+                category="body_count",
+                severity="warning",
+                expected="1",
+                actual=str(report.body_count),
+                message="Multiple bodies present - operations may not have merged.",
+            ))
+    else:
+        expected_summary["body_count"] = "not enforced for sketch/noop/delete-only graph"
 
     # 3. Feature-count plausibility (lower bound).
     expected_min_features = _expected_feature_count_lower_bound(graph)

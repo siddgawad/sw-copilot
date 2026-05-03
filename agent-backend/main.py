@@ -139,6 +139,11 @@ async def generate(req: GenerateRequest) -> GenerateResponse:
     except APIConnectionError as exc:
         raise HTTPException(status_code=502, detail="Could not connect to Groq.") from exc
     except APIStatusError as exc:
+        if exc.status_code == 429:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Groq rate limit reached. Retry shortly. Provider response: {exc.response.text}",
+            ) from exc
         raise HTTPException(
             status_code=502,
             detail=f"Groq API returned {exc.status_code}: {exc.response.text}",

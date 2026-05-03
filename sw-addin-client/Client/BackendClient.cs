@@ -10,6 +10,9 @@ namespace SwCopilotAddin.Client
 {
     public sealed class BackendClient
     {
+        private const int MaxHistoryMessages = 8;
+        private const int MaxHistoryContentChars = 3000;
+
         // Single shared HttpClient — not recreated per request.
         private static readonly HttpClient _http = new HttpClient
         {
@@ -40,9 +43,7 @@ namespace SwCopilotAddin.Client
                     selected_ids  = context.SelectedEntityIds,
                     file_path     = context.FilePath,
                 },
-                messages = (history ?? System.Array.Empty<ConversationMessage>())
-                    .Select(m => new { role = m.Role, content = m.Content })
-                    .ToArray(),
+                messages = BuildHistoryPayload(history),
             };
 
             string json    = JsonConvert.SerializeObject(payload);
@@ -82,6 +83,30 @@ namespace SwCopilotAddin.Client
 
             return JsonConvert.DeserializeObject<AgentResponse>(body)
                    ?? new AgentResponse { StatusMessage = "Empty response from backend." };
+        }
+
+        private static object[] BuildHistoryPayload(IReadOnlyList<ConversationMessage>? history)
+        {
+            if (history == null || history.Count == 0)
+                return System.Array.Empty<object>();
+
+            int skip = System.Math.Max(0, history.Count - MaxHistoryMessages);
+            return history
+                .Skip(skip)
+                .Select(m => new
+                {
+                    role = m.Role,
+                    content = TrimHistoryContent(m.Content),
+                })
+                .Cast<object>()
+                .ToArray();
+        }
+
+        private static string TrimHistoryContent(string content)
+        {
+            if (content.Length <= MaxHistoryContentChars)
+                return content;
+            return content.Substring(0, MaxHistoryContentChars) + "\n... [history truncated]";
         }
 
         public async Task<ValidationResponse> ValidateOperationAsync(

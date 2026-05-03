@@ -25,7 +25,7 @@ _COMPLEX_KEYWORDS = re.compile(
 
 # Hard cap on RAG output to keep the user message inside the LLM context budget
 # even for very long retrieved chunks.
-_RAG_OUTPUT_CHAR_CAP = 6000
+_RAG_OUTPUT_CHAR_CAP = 2500
 
 
 class RagAgent:
@@ -44,10 +44,10 @@ class RagAgent:
 
     def retrieve(self, prompt: str) -> tuple[str, list[str]]:
         """
-        Returns (context_text, source_list). Capped at 4 chunks (was 8) and
+        Returns (context_text, source_list). Capped at 2 chunks and
         truncated to _RAG_OUTPUT_CHAR_CAP characters. Empty when no chunks.
         """
-        n = min(max(settings.max_rag_results, 1), 4)
+        n = min(max(settings.max_rag_results, 1), 2)
         results = self._store.query(prompt, n_results=n)
         if not results:
             return "", []

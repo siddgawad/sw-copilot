@@ -125,6 +125,29 @@ def test_zero_bodies_is_error():
     assert body_errs and body_errs[0].severity == "error"
 
 
+def test_sketch_only_graph_allows_zero_bodies():
+    graph = OperationGraph(
+        operations=[
+            SketchOp(
+                id="sk1",
+                plane="Top Plane",
+                entities=[CircleEntity(cx_mm=0, cy_mm=0, radius_mm=15)],
+            ),
+        ],
+    )
+    report = PartReport(
+        body_count=0,
+        bounding_box=None,
+        feature_count=1,
+        features=[PartFeatureInfo(name="Sketch1", type="ProfileFeature")],
+    )
+
+    result = validate(graph, report)
+
+    assert result.passed is True
+    assert not any(d.category == "body_count" for d in result.discrepancies)
+
+
 def test_multiple_bodies_is_warning_only():
     report = PartReport(
         body_count=2,
@@ -217,10 +240,9 @@ def test_noop_only_graph_does_not_explode():
         operations=[NoopOp(id="n1", message="needs more info")],
     )
     report = PartReport(body_count=0, feature_count=0)
-    # body_count=0 is an error against the default expectation, but the agent
-    # should not crash on a noop-only graph.
     result = validate(graph, report)
-    assert isinstance(result.passed, bool)
+    assert result.passed is True
+    assert not result.discrepancies
 
 
 # ── Tolerance sweep ───────────────────────────────────────────────────────────

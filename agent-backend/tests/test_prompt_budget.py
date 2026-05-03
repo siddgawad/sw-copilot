@@ -106,6 +106,6 @@ def test_rag_retrieve_caps_chunks_and_output_size():
 
     context, sources = agent.retrieve("add M6 counterbore holes")
 
-    assert store.last_n_results == 4
+    assert store.last_n_results == 2
     assert len(context) <= _RAG_OUTPUT_CHAR_CAP + len("\n... [truncated]")
-    assert sources == ["doc0.md", "doc1.md", "doc2.md", "doc3.md"]
+    assert sources == ["doc0.md", "doc1.md"]
