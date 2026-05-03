@@ -1,0 +1,30 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+.env.*
+.venv/
+venv/
+chroma_db/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+last_macro.cs
+generated_from_*.cs
+backend.token
+
+# ── C# / .NET ─────────────────────────────────────────────────────────────────
+sw-addin-client/bin/
+sw-addin-client/obj/
+*.user
+*.suo
+.vs/
+*.DotSettings
+packages/
+
+# ── General ───────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.log

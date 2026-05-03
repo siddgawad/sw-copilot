@@ -1,0 +1,24 @@
+# ── Web framework ──────────────────────────────────────────────────────────────
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+python-multipart==0.0.9       # multipart/form-data support (PDF upload endpoint)
+
+# ── LLM provider ───────────────────────────────────────────────────────────────
+groq==0.9.0                   # Groq SDK — llama3-70b-8192 default for fast generation
+
+# ── Vector store & embeddings ──────────────────────────────────────────────────
+chromadb==0.5.3
+sentence-transformers==2.7.0  # local embedding model; swap for OpenAI embeds if preferred
+
+# ── PDF ingestion ──────────────────────────────────────────────────────────────
+pypdf==4.2.0
+
+# ── Data validation & config ───────────────────────────────────────────────────
+pydantic==2.7.1
+pydantic-settings==2.3.0
+
+# ── HTTP (used in tests / health checks) ───────────────────────────────────────
+httpx==0.27.0
+
+# ── Testing ─────────────────────────────────────────────────────────────────────
+pytest>=9.0.0
