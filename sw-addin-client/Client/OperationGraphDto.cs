@@ -4,6 +4,7 @@ namespace SwCopilotAddin.Client
 {
     public sealed class OperationGraphDto
     {
+        [JsonProperty("schema_version")] public string?        SchemaVersion { get; set; }
         [JsonProperty("part_name")]      public string?        PartName      { get; set; }
         [JsonProperty("operations")]     public OperationDto[] Operations    { get; set; } = System.Array.Empty<OperationDto>();
         [JsonProperty("missing_inputs")] public string[]       MissingInputs { get; set; } = System.Array.Empty<string>();

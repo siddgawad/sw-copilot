@@ -1,0 +1,319 @@
+from __future__ import annotations
+
+from typing import Annotated, List, Literal, Optional, Union
+from pydantic import BaseModel, Field, model_validator
+
+
+# ── Request / context types ───────────────────────────────────────────────────
+
+class DocumentContext(BaseModel):
+    document_type: str       = Field("None", description="Part | Assembly | Drawing | None")
+    body_count:    int       = 0
+    selected_ids:  list[str] = Field(default_factory=list)
+    file_path:     str       = ""
+
+
+class ConversationMessage(BaseModel):
+    role:    str  # "user" | "assistant"
+    content: str
+
+
+class GenerateRequest(BaseModel):
+    prompt:   str
+    context:  DocumentContext            = Field(default_factory=DocumentContext)
+    messages: List[ConversationMessage]  = []  # prior turns, oldest first
+
+
+# ── Legacy CadCommand (kept for test-suite backward-compatibility only) ───────
+
+class DimensionsMeters(BaseModel):
+    length:   Optional[float] = Field(default=None, ge=0)
+    width:    Optional[float] = Field(default=None, ge=0)
+    height:   Optional[float] = Field(default=None, ge=0)
+    radius:   Optional[float] = Field(default=None, ge=0)
+    diameter: Optional[float] = Field(default=None, ge=0)
+    depth:    Optional[float] = Field(default=None, ge=0)
+
+
+class CadCommand(BaseModel):
+    action: Literal[
+        "create_shape", "extrude_selected",
+        "delete_all", "delete_named", "delete_last_n",
+        "noop",
+    ]
+    shape_type: Literal["box", "cylinder", "none"] = "none"
+    dimensions_meters: DimensionsMeters = Field(default_factory=DimensionsMeters)
+    target_plane: Literal["Top Plane", "Front Plane", "Right Plane"] = "Top Plane"
+    target_face: Optional[str] = None
+    target_reference: Optional[dict] = None
+    tolerance: float = Field(default=0.000001, ge=0)
+    clear_existing: bool = False
+    message: str = ""
+
+    @model_validator(mode="after")
+    def validate_executable_dimensions(self) -> "CadCommand":
+        dims = self.dimensions_meters
+
+        if self.action == "create_shape" and self.shape_type == "box":
+            if dims.height is None and dims.depth is not None:
+                dims.height = dims.depth
+            missing = [
+                name for name, value in (
+                    ("length", dims.length),
+                    ("width",  dims.width),
+                    ("height", dims.height),
+                )
+                if value is None or value <= 0
+            ]
+            if missing:
+                raise ValueError("box command missing positive dimensions: " + ", ".join(missing))
+
+        if self.action == "create_shape" and self.shape_type == "cylinder":
+            if dims.height is None and dims.depth is not None:
+                dims.height = dims.depth
+            has_radius   = dims.radius   is not None and dims.radius   > 0
+            has_diameter = dims.diameter is not None and dims.diameter > 0
+            if not has_radius and not has_diameter:
+                raise ValueError("cylinder command missing positive radius or diameter")
+            if dims.height is None or dims.height <= 0:
+                raise ValueError("cylinder command missing positive height")
+
+        if self.action == "extrude_selected":
+            if dims.depth is None and dims.height is not None:
+                dims.depth = dims.height
+            if dims.depth is None or dims.depth <= 0:
+                raise ValueError("extrude_selected command missing positive depth")
+
+        if self.action in ("delete_all", "noop", "delete_named", "delete_last_n") and self.shape_type != "none":
+            raise ValueError(f"{self.action} command must use shape_type='none'")
+
+        if self.action == "delete_named":
+            ref   = self.target_reference or {}
+            names = ref.get("feature_names", [])
+            if not isinstance(names, list) or not names:
+                raise ValueError(
+                    "delete_named requires target_reference.feature_names as a non-empty list of strings"
+                )
+
+        if self.action == "delete_last_n":
+            ref   = self.target_reference or {}
+            count = ref.get("last_n_count", 0)
+            if not isinstance(count, int) or count <= 0:
+                raise ValueError(
+                    "delete_last_n requires target_reference.last_n_count as a positive integer"
+                )
+
+        return self
+
+
+# ── Operation Graph IR ────────────────────────────────────────────────────────
+# Primary execution path.  All dimensions in millimetres throughout.
+
+class RectangleEntity(BaseModel):
+    type: Literal["rectangle"] = "rectangle"
+    x1_mm: float = 0.0
+    y1_mm: float = 0.0
+    x2_mm: float
+    y2_mm: float
+
+
+class CircleEntity(BaseModel):
+    type: Literal["circle"] = "circle"
+    cx_mm: float = 0.0
+    cy_mm: float = 0.0
+    radius_mm: float
+
+
+class LineEntity(BaseModel):
+    type: Literal["line"] = "line"
+    x1_mm: float
+    y1_mm: float
+    x2_mm: float
+    y2_mm: float
+
+
+SketchEntity = Annotated[
+    Union[RectangleEntity, CircleEntity, LineEntity],
+    Field(discriminator="type"),
+]
+
+
+class NamedDimension(BaseModel):
+    name:     str
+    value_mm: float
+
+
+class SketchOp(BaseModel):
+    id:         str
+    type:       Literal["sketch"] = "sketch"
+    plane:      str                    = "Top Plane"
+    entities:   List[SketchEntity]     = []
+    named_dims: List[NamedDimension]   = []
+
+
+class ExtrudeBossOp(BaseModel):
+    id:         str
+    type:       Literal["extrude_boss"] = "extrude_boss"
+    profile_id: str
+    depth_mm:   float
+    name:       Optional[str] = None
+
+    @model_validator(mode="after")
+    def _chk(self) -> "ExtrudeBossOp":
+        if self.depth_mm <= 0:
+            raise ValueError("extrude_boss depth_mm must be positive")
+        return self
+
+
+class ExtrudeCutOp(BaseModel):
+    id:         str
+    type:       Literal["extrude_cut"] = "extrude_cut"
+    profile_id: str
+    depth_mm:   float = 0.0
+    through_all: bool = True
+    name:       Optional[str] = None
+
+
+class FilletOp(BaseModel):
+    id:          str
+    type:        Literal["fillet"] = "fillet"
+    feature_ids: List[str] = []
+    radius_mm:   float
+
+    @model_validator(mode="after")
+    def _chk(self) -> "FilletOp":
+        if self.radius_mm <= 0:
+            raise ValueError("fillet radius_mm must be positive")
+        return self
+
+
+class ChamferOp(BaseModel):
+    id:          str
+    type:        Literal["chamfer"] = "chamfer"
+    feature_ids: List[str] = []
+    distance_mm: float
+
+    @model_validator(mode="after")
+    def _chk(self) -> "ChamferOp":
+        if self.distance_mm <= 0:
+            raise ValueError("chamfer distance_mm must be positive")
+        return self
+
+
+class HolePosition(BaseModel):
+    x_mm: float
+    y_mm: float
+
+
+class HoleWizardOp(BaseModel):
+    id:           str
+    type:         Literal["hole_wizard"] = "hole_wizard"
+    face_of:      str
+    hole_type:    Literal["simple", "counterbore", "countersink", "tapped"] = "simple"
+    fastener_size: str  = "M6"
+    depth_mm:     float = 0.0
+    through_all:  bool  = True
+    positions:    List[HolePosition] = []
+
+    @model_validator(mode="after")
+    def _chk(self) -> "HoleWizardOp":
+        if not self.positions:
+            raise ValueError("hole_wizard requires at least one position")
+        return self
+
+
+class CircularPatternOp(BaseModel):
+    id:              str
+    type:            Literal["circular_pattern"] = "circular_pattern"
+    source_ids:      List[str]
+    count:           int
+    pcd_mm:          float
+    axis_feature_id: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _chk(self) -> "CircularPatternOp":
+        if self.count < 2:
+            raise ValueError("circular_pattern count must be >= 2")
+        if self.pcd_mm <= 0:
+            raise ValueError("circular_pattern pcd_mm must be positive")
+        return self
+
+
+class LinearPatternOp(BaseModel):
+    id:              str
+    type:            Literal["linear_pattern"] = "linear_pattern"
+    source_ids:      List[str]
+    dir1_count:      int   = 1
+    dir1_spacing_mm: float = 0.0
+    dir2_count:      int   = 1
+    dir2_spacing_mm: float = 0.0
+
+
+class MirrorOp(BaseModel):
+    id:           str
+    type:         Literal["mirror"] = "mirror"
+    source_ids:   List[str]
+    mirror_plane: str = "Right Plane"
+
+
+class RevolveOp(BaseModel):
+    id:         str
+    type:       Literal["revolve"] = "revolve"
+    profile_id: str
+    angle_deg:  float = 360.0
+
+
+class DeleteFeatureOp(BaseModel):
+    id:          str
+    type:        Literal["delete_feature"] = "delete_feature"
+    feature_ids: List[str]    = []
+    last_n:      Optional[int] = None
+
+
+class NoopOp(BaseModel):
+    id:      str
+    type:    Literal["noop"] = "noop"
+    message: str = ""
+
+
+Operation = Annotated[
+    Union[
+        SketchOp, ExtrudeBossOp, ExtrudeCutOp,
+        FilletOp, ChamferOp, HoleWizardOp,
+        CircularPatternOp, LinearPatternOp, MirrorOp,
+        RevolveOp, DeleteFeatureOp, NoopOp,
+    ],
+    Field(discriminator="type"),
+]
+
+
+class OperationGraph(BaseModel):
+    schema_version: str = "0.2"
+    part_name:      Optional[str]    = None
+    reasoning:      Optional[str]    = None  # LLM scratchpad — dimension derivation notes
+    operations:     List[Operation]
+    missing_inputs: List[str]        = []
+    assumptions:    List[str]        = []
+
+    @model_validator(mode="after")
+    def _unique_ids(self) -> "OperationGraph":
+        ids = [op.id for op in self.operations]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Operation IDs must be unique within the graph")
+        return self
+
+
+# ── API response ──────────────────────────────────────────────────────────────
+
+class GenerateResponse(BaseModel):
+    macro_code:      Optional[str]            = None
+    cad_command:     Optional[CadCommand]     = None   # kept for test backward-compat
+    operation_graph: Optional[OperationGraph] = None   # primary execution path
+    status_message:  str
+    rag_sources:     list[str]                = Field(default_factory=list)
+
+
+class IngestResponse(BaseModel):
+    ingested_files: int
+    total_chunks:   int
+    detail:         dict[str, int]

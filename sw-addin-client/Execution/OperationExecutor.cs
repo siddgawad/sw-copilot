@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using Newtonsoft.Json;
 using SolidWorks.Interop.sldworks;
 using SolidWorks.Interop.swconst;
 using SwCopilotAddin.Client;
@@ -34,6 +35,12 @@ namespace SwCopilotAddin.Execution
 
         public string Execute(OperationGraphDto graph)
         {
+            if (!string.IsNullOrWhiteSpace(graph.SchemaVersion) &&
+                !string.Equals(graph.SchemaVersion, "0.2", StringComparison.Ordinal))
+            {
+                return $"ERROR: Unsupported operation graph schema_version '{graph.SchemaVersion}'. Expected '0.2'.";
+            }
+
             IModelDoc2? doc = EnsurePartDoc(createIfMissing: true);
             if (doc == null) return "ERROR: No active part document.";
 
@@ -80,7 +87,10 @@ namespace SwCopilotAddin.Execution
             }
 
             if (!anyError)
+            {
                 doc.ForceRebuild3(false);
+                lines.Add("Runtime (report): " + ExtractPartReport(doc));
+            }
 
             return string.Join("\n", lines);
         }
@@ -848,6 +858,146 @@ namespace SwCopilotAddin.Execution
         }
 
         /// <summary>Converts nullable mm value to metres. Null → 0.</summary>
+        /// <summary>Extracts a compact JSON report of the current part after execution.</summary>
+        public static string ExtractPartReport(IModelDoc2 doc)
+        {
+            try
+            {
+                IPartDoc? part = doc as IPartDoc;
+                object[] bodies = part?.GetBodies2((int)swBodyType_e.swSolidBody, true) as object[]
+                                  ?? System.Array.Empty<object>();
+
+                double[]? box = GetCombinedBodyBox(bodies);
+                var features = CollectFeatureReports(doc);
+
+                var report = new
+                {
+                    body_count = bodies.Length,
+                    bounding_box = box == null
+                        ? null
+                        : new
+                        {
+                            x_mm = Math.Round((box[3] - box[0]) * 1000.0, 3),
+                            y_mm = Math.Round((box[4] - box[1]) * 1000.0, 3),
+                            z_mm = Math.Round((box[5] - box[2]) * 1000.0, 3),
+                        },
+                    mass_g = Math.Round(EstimateMassGrams(doc, bodies), 3),
+                    feature_count = features.Count,
+                    features,
+                };
+
+                return JsonConvert.SerializeObject(report, Formatting.None);
+            }
+            catch (Exception ex)
+            {
+                var errorReport = new
+                {
+                    error = "part_report_failed",
+                    message = ex.Message,
+                };
+                return JsonConvert.SerializeObject(errorReport, Formatting.None);
+            }
+        }
+
+        private static double[]? GetCombinedBodyBox(object[] bodies)
+        {
+            double[]? combined = null;
+
+            foreach (object bodyObj in bodies)
+            {
+                if (!(bodyObj is IBody2 body)) continue;
+                double[]? bodyBox = ToDoubleArray(body.GetBodyBox());
+                if (bodyBox == null || bodyBox.Length < 6) continue;
+
+                if (combined == null)
+                {
+                    combined = new[] { bodyBox[0], bodyBox[1], bodyBox[2], bodyBox[3], bodyBox[4], bodyBox[5] };
+                }
+                else
+                {
+                    combined[0] = Math.Min(combined[0], bodyBox[0]);
+                    combined[1] = Math.Min(combined[1], bodyBox[1]);
+                    combined[2] = Math.Min(combined[2], bodyBox[2]);
+                    combined[3] = Math.Max(combined[3], bodyBox[3]);
+                    combined[4] = Math.Max(combined[4], bodyBox[4]);
+                    combined[5] = Math.Max(combined[5], bodyBox[5]);
+                }
+            }
+
+            return combined;
+        }
+
+        private static double EstimateMassGrams(IModelDoc2 doc, object[] bodies)
+        {
+            double[]? massProps = ToDoubleArray(doc.GetMassProperties());
+            double volumeM3 = 0.0;
+
+            if (massProps != null && massProps.Length > 0 && massProps[0] > 0)
+            {
+                volumeM3 = massProps[0];
+            }
+            else
+            {
+                foreach (object bodyObj in bodies)
+                {
+                    if (!(bodyObj is IBody2 body)) continue;
+                    double[]? bodyMassProps = ToDoubleArray(body.GetMassProperties(7800.0));
+                    if (bodyMassProps != null && bodyMassProps.Length > 0 && bodyMassProps[0] > 0)
+                        volumeM3 += bodyMassProps[0];
+                }
+            }
+
+            const double steelDensityKgPerM3 = 7800.0;
+            return volumeM3 * steelDensityKgPerM3 * 1000.0;
+        }
+
+        private static List<object> CollectFeatureReports(IModelDoc2 doc)
+        {
+            var features = new List<object>();
+            Feature? f = (Feature?)doc.FirstFeature();
+            while (f != null)
+            {
+                features.Add(new
+                {
+                    name = f.Name ?? string.Empty,
+                    type = f.GetTypeName2() ?? string.Empty,
+                    suppressed = IsFeatureSuppressed(f),
+                });
+
+                f = (Feature?)f.GetNextFeature();
+            }
+
+            return features;
+        }
+
+        private static bool IsFeatureSuppressed(Feature feature)
+        {
+            try
+            {
+                return feature.IsSuppressed();
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static double[]? ToDoubleArray(object? value)
+        {
+            if (value is double[] doubles)
+                return doubles;
+
+            if (value is object[] objects)
+            {
+                var result = new double[objects.Length];
+                for (int i = 0; i < objects.Length; i++)
+                    result[i] = Convert.ToDouble(objects[i]);
+                return result;
+            }
+
+            return null;
+        }
+
         private static double Mm(double? value) => (value ?? 0.0) / 1000.0;
 
         /// <summary>Returns the standard clearance hole diameter for a given fastener.</summary>
