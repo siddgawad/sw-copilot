@@ -20,18 +20,21 @@ namespace SwCopilotAddin.UI
         private readonly ISldWorks _swApp;
         private readonly BackendClient _client;
         private readonly DocumentContextBuilder _contextBuilder;
+        private readonly OperationExecutor _operationExecutor;
         private readonly List<ConversationMessage> _history = new List<ConversationMessage>();
 
         private readonly RichTextBox _messages;
         private readonly Label _status;
         private readonly TextBox _input;
         private readonly Button _sendButton;
+        private readonly Button _undoButton;
 
         public TaskPaneHost(ISldWorks swApp)
         {
             _swApp = swApp;
             _client = new BackendClient();
             _contextBuilder = new DocumentContextBuilder(swApp);
+            _operationExecutor = new OperationExecutor(swApp);
 
             BackColor = Color.FromArgb(0x1E, 0x1E, 0x2E);
             Dock = DockStyle.Fill;
@@ -102,6 +105,20 @@ namespace SwCopilotAddin.UI
             _sendButton.FlatAppearance.BorderSize = 0;
             _sendButton.Click += async (_, _) => await SubmitAsync();
 
+            _undoButton = new Button
+            {
+                Text = "Undo Last",
+                Dock = DockStyle.Right,
+                Width = 96,
+                BackColor = Color.FromArgb(0x45, 0x45, 0x5E),
+                ForeColor = Color.FromArgb(0xCD, 0xD6, 0xF4),
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe UI", 9, FontStyle.Bold),
+                TabIndex = 2,
+            };
+            _undoButton.FlatAppearance.BorderSize = 0;
+            _undoButton.Click += (_, _) => RollbackLastExecute();
+
             var inputRow = new Panel
             {
                 Dock = DockStyle.Fill,
@@ -109,6 +126,7 @@ namespace SwCopilotAddin.UI
                 BackColor = Color.FromArgb(0x1E, 0x1E, 0x2E),
             };
             inputRow.Controls.Add(_input);
+            inputRow.Controls.Add(_undoButton);
             inputRow.Controls.Add(_sendButton);
 
             var bottom = new Panel
@@ -141,6 +159,7 @@ namespace SwCopilotAddin.UI
             AppendMessage("You", prompt);
             SetStatus("Contacting agent...");
             _sendButton.Enabled = false;
+            _undoButton.Enabled = false;
 
             try
             {
@@ -174,8 +193,7 @@ namespace SwCopilotAddin.UI
                     }
 
                     SetStatus("Executing operation plan...");
-                    var executor = new OperationExecutor(_swApp);
-                    string result = executor.Execute(graph);
+                    string result = _operationExecutor.Execute(graph);
                     SetStatus(result.Contains("ERROR") ? "Error — see message above" : "Done");
                     AppendMessage("Runtime", result);
                 }
@@ -243,6 +261,30 @@ namespace SwCopilotAddin.UI
             finally
             {
                 _sendButton.Enabled = true;
+                _undoButton.Enabled = true;
+                _input.Focus();
+            }
+        }
+
+        private void RollbackLastExecute()
+        {
+            SetStatus("Undoing last execution...");
+            _undoButton.Enabled = false;
+
+            try
+            {
+                string result = _operationExecutor.RollbackLastExecute();
+                SetStatus(result.StartsWith("ERROR", StringComparison.OrdinalIgnoreCase) ? "Undo failed" : "Ready");
+                AppendMessage("Runtime", result);
+            }
+            catch (Exception ex)
+            {
+                SetStatus("Undo failed");
+                AppendMessage("Error", ex.Message);
+            }
+            finally
+            {
+                _undoButton.Enabled = true;
                 _input.Focus();
             }
         }

@@ -115,6 +115,7 @@ Latest Codex validation on 2026-05-03:
 - C# build from `sw-addin-client`: 0 warnings, 0 errors.
 - Backend tests from `agent-backend`: `47 passed, 1 skipped`; skipped test is live LLM generation when provider quota/rate limit blocks the call.
 - Backend import check passed: `OperationGraph.schema_version == "0.2"`.
+- C# rollback build on 2026-05-03: `Release-beta3`, 0 warnings, 0 errors.
 
 ### Backend (Python) â€” needs uvicorn restart to pick up latest changes
 
@@ -139,13 +140,13 @@ if ($p) { Stop-Process -Id $p -Force; Start-Sleep -Seconds 1 }
 
 **What needs restart to pick up:** All recent Python changes (dimension resolver, rag_agent, macro_engineer, schemas, main).
 
-### C# Add-in â€” BUILDS CLEAN (Release-beta2) âœ…
+### C# Add-in â€” BUILDS CLEAN (Release-beta3) âœ…
 
 **Build command (close SolidWorks first â€” it locks the DLL):**
 ```powershell
 cd C:\projects\sw-copilot\sw-addin-client
 dotnet build SwCopilotAddin.csproj -c Release -p:Platform=x64 -p:RegisterForComInterop=false `
-  -p:OutDir=C:\projects\sw-copilot\sw-addin-client\bin\x64\Release-beta2\net48\
+  -p:OutDir=C:\projects\sw-copilot\sw-addin-client\bin\x64\Release-beta3\net48\
 ```
 
 **Register (run from elevated PowerShell in sw-addin-client\):**
@@ -164,6 +165,7 @@ dotnet build SwCopilotAddin.csproj -c Release -p:Platform=x64 -p:RegisterForComI
 - Plan preview dialog shown before execution; user can cancel
 - Post-execution part report appended after successful `OperationExecutor.Execute()` calls
 - Operation graph schema version guard added; non-null versions must equal `"0.2"`
+- Undo Last button added to `TaskPaneHost.cs`; `OperationExecutor.RollbackLastExecute()` deletes the features created by the last operation graph.
 
 **Live testing status:**
 - âœ… Box creation works (sketch + extrude_boss)
@@ -242,11 +244,17 @@ After testing, update the Status column and describe any errors in the Handoff Q
 
 ---
 
-### Task C-4: Rollback Button (Week 2)
+### Task C-4: Rollback Button (Week 2) — **Codex DONE 2026-05-03**
 **Why:** Engineer must be able to undo an entire Execute() call.
 **What:** In `Execute()`, track which Feature objects were created during this call (not pre-existing).
 Add a public `RollbackLastExecute(IModelDoc2 doc)` method that selects and deletes those features.
 Expose it in `TaskPaneHost.cs` as a "Undo Last" button in the bottom panel.
+
+Status:
+- Implemented `_lastCreatedFeatures` tracking in `OperationExecutor`.
+- Added `OperationExecutor.RollbackLastExecute(IModelDoc2? doc = null)`.
+- `TaskPaneHost` now owns one persistent `OperationExecutor` and exposes `Undo Last` beside Send.
+- Build verified: `Release-beta3`, 0 warnings, 0 errors.
 
 ---
 
@@ -339,5 +347,5 @@ object[] bodies = part?.GetBodies2((int)swBodyType_e.swSolidBody, true) as objec
 
 - [ ] **[Codex â†’ Claude]** After each live test (Task C-3), write results to the test table above. If any operation type fails with a specific COM error, paste it in this queue and Claude will fix the Python planner to avoid generating that pattern.
 
-- [ ] **[Codex â†’ Claude]** When the `Rollback` button is added to TaskPaneHost (Task C-4), let Claude know so the backend can record a `rollback_id` in the response for audit logging.
+- [x] **[Codex â†’ Claude]** `Rollback` button is added to TaskPaneHost (Task C-4). Backend can now add a future `rollback_id`/audit field without blocking C# execution.
 

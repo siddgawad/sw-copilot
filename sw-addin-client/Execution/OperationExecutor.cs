@@ -21,6 +21,8 @@ namespace SwCopilotAddin.Execution
         private readonly Dictionary<string, Feature> _features =
             new Dictionary<string, Feature>(StringComparer.OrdinalIgnoreCase);
 
+        private readonly List<Feature> _lastCreatedFeatures = new List<Feature>();
+
         private static readonly HashSet<string> _systemTypes = new HashSet<string>
         {
             "RefPlane", "OriginProfileFeature", "Reference", "HistoryFolder",
@@ -64,6 +66,9 @@ namespace SwCopilotAddin.Execution
             if (ruleViolation != null)
                 return $"RULE VIOLATION — execution refused:\n{ruleViolation}";
 
+            _features.Clear();
+            _lastCreatedFeatures.Clear();
+
             bool anyError = false;
             foreach (OperationDto op in graph.Operations ?? System.Array.Empty<OperationDto>())
             {
@@ -93,6 +98,53 @@ namespace SwCopilotAddin.Execution
             }
 
             return string.Join("\n", lines);
+        }
+
+        public string RollbackLastExecute(IModelDoc2? doc = null)
+        {
+            doc ??= EnsurePartDoc(createIfMissing: false);
+            if (doc == null) return "ERROR: No active part document.";
+
+            if (_lastCreatedFeatures.Count == 0)
+                return "No features available to undo.";
+
+            doc.ClearSelection2(true);
+
+            int selected = 0;
+            foreach (Feature feature in _lastCreatedFeatures.AsEnumerable().Reverse())
+            {
+                try
+                {
+                    string name = feature.Name;
+                    if (string.IsNullOrWhiteSpace(name))
+                        continue;
+
+                    if (feature.Select2(selected > 0, 0))
+                        selected++;
+                }
+                catch
+                {
+                    // Feature may have been deleted manually since the last execution.
+                }
+            }
+
+            if (selected == 0)
+            {
+                _lastCreatedFeatures.Clear();
+                _features.Clear();
+                return "No previously-created features could be selected for undo.";
+            }
+
+            int opts = (int)swDeleteSelectionOptions_e.swDelete_Absorbed |
+                       (int)swDeleteSelectionOptions_e.swDelete_Children;
+            doc.Extension.DeleteSelection2(opts);
+            doc.ForceRebuild3(false);
+
+            _lastCreatedFeatures.Clear();
+            _features.Clear();
+
+            string noun = selected == 1 ? "feature" : "features";
+            return $"Undid last execution batch ({selected} {noun} deleted).";
         }
 
         // ── Pre-execution rule engine ─────────────────────────────────────────
@@ -229,7 +281,7 @@ namespace SwCopilotAddin.Execution
             // Register the last sketch feature so later ops can reference this op id.
             Feature? sketchFeat = FindLastFeatureOfType(doc, "ProfileFeature", "3DProfileFeature");
             if (sketchFeat != null)
-                _features[op.Id] = sketchFeat;
+                RegisterFeature(op.Id, sketchFeat);
 
             return $"Sketch on {plane} with {drawn} entities";
         }
@@ -261,7 +313,7 @@ namespace SwCopilotAddin.Execution
             if (!string.IsNullOrWhiteSpace(op.Name))
                 try { feature.Name = op.Name; } catch { }
 
-            _features[op.Id] = feature;
+            RegisterFeature(op.Id, feature);
             doc.ForceRebuild3(false);
             return $"Extrude Boss {op.DepthMm:0.#} mm";
         }
@@ -297,7 +349,7 @@ namespace SwCopilotAddin.Execution
             if (!string.IsNullOrWhiteSpace(op.Name))
                 try { feature.Name = op.Name; } catch { }
 
-            _features[op.Id] = feature;
+            RegisterFeature(op.Id, feature);
             doc.ForceRebuild3(false);
             return thruAll ? "Extrude Cut through all" : $"Extrude Cut {op.DepthMm:0.#} mm";
         }
@@ -326,7 +378,7 @@ namespace SwCopilotAddin.Execution
 
             if (fillet == null) return "ERROR: Fillet failed — edges may not support this radius";
 
-            _features[op.Id] = fillet;
+            RegisterFeature(op.Id, fillet);
             return $"Fillet R={op.RadiusMm:0.#} mm";
         }
 
@@ -355,7 +407,7 @@ namespace SwCopilotAddin.Execution
 
             if (chamfer == null) return "ERROR: Chamfer failed";
 
-            _features[op.Id] = chamfer;
+            RegisterFeature(op.Id, chamfer);
             return $"Chamfer {op.DistanceMm:0.#} mm";
         }
 
@@ -427,7 +479,7 @@ namespace SwCopilotAddin.Execution
 
             if (cut == null) return "ERROR: Hole cut failed";
 
-            _features[op.Id] = cut;
+            RegisterFeature(op.Id, cut);
             doc.ForceRebuild3(false);
             string label = op.HoleType == "simple" ? "drill" : op.HoleType ?? "drill";
             return $"{positions.Length}× {op.FastenerSize} {label} hole(s)";
@@ -484,7 +536,7 @@ namespace SwCopilotAddin.Execution
 
             if (pattern == null) return "ERROR: Circular pattern failed — ensure an axis is available";
 
-            _features[op.Id] = pattern;
+            RegisterFeature(op.Id, pattern);
             return $"Circular pattern: {count}× on Ø{op.PcdMm:0.#} mm PCD";
         }
 
@@ -534,7 +586,7 @@ namespace SwCopilotAddin.Execution
 
             if (pattern == null) return "ERROR: Linear pattern failed";
 
-            _features[op.Id] = pattern;
+            RegisterFeature(op.Id, pattern);
             return $"Linear pattern {d1Count}×{d2Count}";
         }
 
@@ -562,7 +614,7 @@ namespace SwCopilotAddin.Execution
             Feature? mirror = doc.FeatureManager.InsertMirrorFeature2(false, false, true, false, 0);
             if (mirror == null) return "ERROR: Mirror failed";
 
-            _features[op.Id] = mirror;
+            RegisterFeature(op.Id, mirror);
             return $"Mirror about {mirrorPlane}";
         }
 
@@ -605,7 +657,7 @@ namespace SwCopilotAddin.Execution
 
             if (feature == null) return "ERROR: Revolve failed — sketch must have a centerline";
 
-            _features[op.Id] = feature;
+            RegisterFeature(op.Id, feature);
             doc.ForceRebuild3(false);
             return $"Revolve {op.AngleDeg ?? 360.0:0.#}°";
         }
@@ -776,6 +828,15 @@ namespace SwCopilotAddin.Execution
             if (!_features.TryGetValue(opId, out Feature feat)) return;
             doc.ClearSelection2(true);
             feat.Select2(false, 0);
+        }
+
+        private void RegisterFeature(string? opId, Feature feature)
+        {
+            string opKey = opId?.Trim() ?? string.Empty;
+            if (opKey.Length > 0)
+                _features[opKey] = feature;
+
+            _lastCreatedFeatures.Add(feature);
         }
 
         /// <summary>
