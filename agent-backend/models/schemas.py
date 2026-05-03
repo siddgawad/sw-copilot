@@ -21,7 +21,7 @@ class ConversationMessage(BaseModel):
 class GenerateRequest(BaseModel):
     prompt:   str
     context:  DocumentContext            = Field(default_factory=DocumentContext)
-    messages: List[ConversationMessage]  = []  # prior turns, oldest first
+    messages: List[ConversationMessage]  = Field(default_factory=list)  # prior turns, oldest first
 
 
 # ── Legacy CadCommand (kept for test-suite backward-compatibility only) ───────
@@ -147,8 +147,8 @@ class SketchOp(BaseModel):
     id:         str
     type:       Literal["sketch"] = "sketch"
     plane:      str                    = "Top Plane"
-    entities:   List[SketchEntity]     = []
-    named_dims: List[NamedDimension]   = []
+    entities:   List[SketchEntity]     = Field(default_factory=list)
+    named_dims: List[NamedDimension]   = Field(default_factory=list)
 
 
 class ExtrudeBossOp(BaseModel):
@@ -177,7 +177,7 @@ class ExtrudeCutOp(BaseModel):
 class FilletOp(BaseModel):
     id:          str
     type:        Literal["fillet"] = "fillet"
-    feature_ids: List[str] = []
+    feature_ids: List[str] = Field(default_factory=list)
     radius_mm:   float
 
     @model_validator(mode="after")
@@ -190,7 +190,7 @@ class FilletOp(BaseModel):
 class ChamferOp(BaseModel):
     id:          str
     type:        Literal["chamfer"] = "chamfer"
-    feature_ids: List[str] = []
+    feature_ids: List[str] = Field(default_factory=list)
     distance_mm: float
 
     @model_validator(mode="after")
@@ -213,7 +213,7 @@ class HoleWizardOp(BaseModel):
     fastener_size: str  = "M6"
     depth_mm:     float = 0.0
     through_all:  bool  = True
-    positions:    List[HolePosition] = []
+    positions:    List[HolePosition] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _chk(self) -> "HoleWizardOp":
@@ -266,7 +266,7 @@ class RevolveOp(BaseModel):
 class DeleteFeatureOp(BaseModel):
     id:          str
     type:        Literal["delete_feature"] = "delete_feature"
-    feature_ids: List[str]    = []
+    feature_ids: List[str]    = Field(default_factory=list)
     last_n:      Optional[int] = None
 
 
@@ -292,8 +292,8 @@ class OperationGraph(BaseModel):
     part_name:      Optional[str]    = None
     reasoning:      Optional[str]    = None  # LLM scratchpad — dimension derivation notes
     operations:     List[Operation]
-    missing_inputs: List[str]        = []
-    assumptions:    List[str]        = []
+    missing_inputs: List[str]        = Field(default_factory=list)
+    assumptions:    List[str]        = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _unique_ids(self) -> "OperationGraph":

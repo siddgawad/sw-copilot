@@ -68,7 +68,7 @@ C:\projects\sw-copilot\                          â† git repo root
 â”‚   â”‚                                       OperationGraph has reasoning field (LLM scratchpad, not executed).
 â”‚   â””â”€â”€ tests\
 â”‚       â”œâ”€â”€ conftest.py                  â† Shared fixtures; backend token loader; requires_backend marker
-â”‚       â””â”€â”€ test_security.py             â† 48 tests: auth(6) + auth-success(3) + sanitization(13) + schema(16) + more
+â”‚       â””â”€â”€ test_security.py             â† 54 tests: auth + auth-success + sanitization + schema regression
 â”‚
 â””â”€â”€ sw-addin-client\                     â† C# .NET 4.8 SolidWorks Add-in (Codex owns)
     â”œâ”€â”€ SwCopilotAddin.csproj            â† SDK-style, net48, x64, UseWindowsForms=true
@@ -117,6 +117,7 @@ Latest Codex validation on 2026-05-03:
 - Backend import check passed: `OperationGraph.schema_version == "0.2"`.
 - C# rollback build on 2026-05-03: `Release-beta3`, 0 warnings, 0 errors.
 - Beta package build on 2026-05-03 succeeded: `artifacts\sw-copilot-beta.zip` (~112 MB). Packaged backend `/version` smoke check passed on port 8002 with `vector_docs=37`.
+- Sanitizer hardening on 2026-05-03: C# strips full paths to filenames before context upload; C# and Python both remove newlines/backticks/control chars and redact injection markers. Backend sanitizer tests: `19 passed`; full security suite: `53 passed, 1 skipped`; smoke test: `10 passed, 1 skipped, 0 failed` (LLM rate-limit skip).
 
 ### Backend (Python) â€” needs uvicorn restart to pick up latest changes
 
@@ -137,7 +138,7 @@ if ($p) { Stop-Process -Id $p -Force; Start-Sleep -Seconds 1 }
 - RAG: 37 chunks in ChromaDB (4 knowledge .md files). Auto-ingested at startup when store is empty.
 - LLM system prompt includes engineering reasoning step: LLM derives all dimensions from injected standards before planning
 - `OperationGraph.reasoning` field: LLM scratchpad for dimension derivation (not executed, just shows work)
-- 48 security tests passing: `cd agent-backend && .venv\Scripts\python -m pytest tests/test_security.py`
+- 54 security tests passing/skipping as expected: `cd agent-backend && .venv\Scripts\python -m pytest tests/test_security.py`
 
 **What needs restart to pick up:** All recent Python changes (dimension resolver, rag_agent, macro_engineer, schemas, main).
 
@@ -347,7 +348,7 @@ object[] bodies = part?.GetBodies2((int)swBodyType_e.swSolidBody, true) as objec
 
 - Token: `%LOCALAPPDATA%\SwCopilotAddin\backend.token` â€” 64-char hex, regenerated every uvicorn startup
 - All FastAPI routes protected by `X-Copilot-Token` header (timing-safe `secrets.compare_digest`)
-- Context strings sanitized before LLM: newlines, backticks, injection keywords â†’ `[REDACTED]`, truncated to 1024 chars
+- Context strings sanitized before LLM: newlines, backticks, control chars, injection markers -> `[REDACTED]`, truncated to 1024 chars. C# sends only the file name, not the full local path.
 - Pre-execution rule engine: geometric impossibilities refused before COM
 - MacroExecutor (Roslyn) is legacy only â€” always behind preview dialog + AST denylist â€” never primary path
 

@@ -19,9 +19,11 @@ rag_agent:   RagAgent           | None = None
 backend_token: str | None = None
 
 _INJECTION_PATTERN = re.compile(
-    r"(RULE:|SYSTEM:|INSTRUCTION:|IGNORE\s+PREVIOUS|DISREGARD\s+PREVIOUS|<\|im_start\|>|<\|im_end\|>)",
+    r"(RULE:|SYSTEM:|INSTRUCTION:|DEVELOPER:|ASSISTANT:|IGNORE\s+PREVIOUS|DISREGARD\s+PREVIOUS|<\|im_start\|>|<\|im_end\|>)",
     re.IGNORECASE,
 )
+_CONTROL_CHARS_PATTERN = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_WHITESPACE_PATTERN = re.compile(r"\s+")
 
 
 def _token_path() -> Path:
@@ -46,10 +48,16 @@ async def verify_token(x_copilot_token: str = Header(default="")) -> None:
         raise HTTPException(status_code=403, detail="Invalid or missing X-Copilot-Token header.")
 
 
-def _sanitize_context_value(value: str) -> str:
-    sanitized = value.replace("\n", " ").replace("\r", " ").replace("`", "'")
+def _sanitize_context_value(value: object, max_length: int = 1024) -> str:
+    if value is None:
+        return ""
+
+    sanitized = str(value)
+    sanitized = sanitized.replace("\n", " ").replace("\r", " ").replace("`", "'")
+    sanitized = _CONTROL_CHARS_PATTERN.sub(" ", sanitized)
     sanitized = _INJECTION_PATTERN.sub("[REDACTED]", sanitized)
-    return sanitized[:1024]
+    sanitized = _WHITESPACE_PATTERN.sub(" ", sanitized).strip()
+    return sanitized[:max_length]
 
 
 def _sanitize_context(ctx: DocumentContext) -> DocumentContext:

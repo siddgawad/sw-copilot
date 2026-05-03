@@ -145,7 +145,7 @@ echo GROQ_API_KEY=your_key_here > .env
 cd sw-addin-client
 dotnet build SwCopilotAddin.csproj -c Release -p:Platform=x64 `
   -p:RegisterForComInterop=false `
-  -p:OutDir=bin\x64\Release-beta2\net48\
+  -p:OutDir=bin\x64\Release-beta3\net48\
 
 # Register (elevated PowerShell)
 .\Register-DevAddin.ps1
@@ -160,7 +160,7 @@ Open SolidWorks — the Copilot task pane appears on the right.
 - Backend generates a 64-char hex token at startup
 - Token written to `%LOCALAPPDATA%\SwCopilotAddin\backend.token`
 - All API routes require `X-Copilot-Token` header (timing-safe comparison)
-- Context strings sanitized before LLM: injection keywords redacted, truncated to 1024 chars
+- Context strings sanitized before LLM: newlines, backticks, control chars, injection markers redacted, truncated to 1024 chars
 - Pre-execution rule engine rejects geometric impossibilities before any COM call
 - No macro code execution by default — Roslyn path is legacy and always behind a preview dialog
 

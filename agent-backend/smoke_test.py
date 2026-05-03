@@ -47,11 +47,11 @@ def load_token() -> str:
 
 # ── Check helpers ──────────────────────────────────────────────────────────────
 
-_results: list[tuple[str, bool, str]] = []
+_results: list[tuple[str, bool | None, str]] = []
 
 
-def record(name: str, passed: bool, detail: str = "") -> None:
-    status = "PASS" if passed else "FAIL"
+def record(name: str, passed: bool | None, detail: str = "") -> None:
+    status = "SKIP" if passed is None else "PASS" if passed else "FAIL"
     print(f"  [{status}] {name}" + (f": {detail}" if detail else ""))
     _results.append((name, passed, detail))
 
@@ -97,32 +97,30 @@ def check_generate_cube(client: httpx.Client, headers: dict) -> None:
         record("generate/cube reachable", False, "Connection refused")
         return
 
-    record("generate/cube status 200", resp.status_code == 200, f"got {resp.status_code}")
     if resp.status_code != 200:
+        if resp.status_code == 502 and "rate limit" in resp.text.lower():
+            record("generate/cube skipped due to provider rate limit", None, resp.text[:200])
+            return
+        record("generate/cube status 200", False, f"got {resp.status_code}")
         record("generate/cube body", False, resp.text[:300])
         return
+    record("generate/cube status 200", True, "got 200")
 
     data = resp.json()
-    cmd = data.get("cad_command")
-    record("generate/cube cad_command present", cmd is not None)
+    graph = data.get("operation_graph")
+    record("generate/cube operation_graph present", graph is not None)
     record("generate/cube macro_code is None", data.get("macro_code") is None,
            f"got {data.get('macro_code')!r}")
 
-    if cmd is not None:
-        action = cmd.get("action", "")
-        shape = cmd.get("shape_type", "")
-        dims = cmd.get("dimensions_meters", {})
-        print(f"  [INFO]  action={action}  shape_type={shape}  dimensions={dims}")
-        record("generate/cube action is create_shape", action == "create_shape",
-               f"got {action!r}")
-        record("generate/cube shape_type is box", shape == "box", f"got {shape!r}")
-        # All dimensions for a cube must be the same and positive
-        length = dims.get("length", 0)
-        width = dims.get("width", 0)
-        height = dims.get("height", 0) or dims.get("depth", 0) or 0
-        record("generate/cube dimensions positive",
-               all(v is not None and v > 0 for v in (length, width, height)),
-               f"l={length} w={width} h={height}")
+    if graph is not None:
+        operations = graph.get("operations", [])
+        op_types = [op.get("type", "") for op in operations]
+        print(f"  [INFO]  schema={graph.get('schema_version')}  operations={op_types}")
+        record("generate/cube schema_version is 0.2", graph.get("schema_version") == "0.2",
+               f"got {graph.get('schema_version')!r}")
+        record("generate/cube has sketch op", "sketch" in op_types, f"ops={op_types!r}")
+        record("generate/cube has extrude_boss op", "extrude_boss" in op_types,
+               f"ops={op_types!r}")
 
 
 def check_generate_delete_all(client: httpx.Client, headers: dict) -> None:
@@ -142,21 +140,26 @@ def check_generate_delete_all(client: httpx.Client, headers: dict) -> None:
         record("generate/delete reachable", False, "Connection refused")
         return
 
-    record("generate/delete status 200", resp.status_code == 200, f"got {resp.status_code}")
     if resp.status_code != 200:
+        if resp.status_code == 502 and "rate limit" in resp.text.lower():
+            record("generate/delete skipped due to provider rate limit", None, resp.text[:200])
+            return
+        record("generate/delete status 200", False, f"got {resp.status_code}")
         record("generate/delete body", False, resp.text[:300])
         return
+    record("generate/delete status 200", True, "got 200")
 
     data = resp.json()
-    cmd = data.get("cad_command")
-    record("generate/delete cad_command present", cmd is not None)
+    graph = data.get("operation_graph")
+    record("generate/delete operation_graph present", graph is not None)
     record("generate/delete macro_code is None", data.get("macro_code") is None)
 
-    if cmd is not None:
-        action = cmd.get("action", "")
-        print(f"  [INFO]  action={action}")
-        record("generate/delete action is delete_all", action == "delete_all",
-               f"got {action!r}")
+    if graph is not None:
+        operations = graph.get("operations", [])
+        op_types = [op.get("type", "") for op in operations]
+        print(f"  [INFO]  operations={op_types}")
+        record("generate/delete has delete_feature op", "delete_feature" in op_types,
+               f"ops={op_types!r}")
 
 
 def check_auth_rejection(client: httpx.Client) -> None:
@@ -193,15 +196,16 @@ def main() -> None:
 
     # ── Summary ──────────────────────────────────────────────────────────────
     print("\n=== Summary ===")
-    passed = sum(1 for _, ok, _ in _results if ok)
-    failed = sum(1 for _, ok, _ in _results if not ok)
+    passed = sum(1 for _, ok, _ in _results if ok is True)
+    skipped = sum(1 for _, ok, _ in _results if ok is None)
+    failed = sum(1 for _, ok, _ in _results if ok is False)
     total = len(_results)
-    print(f"  {passed}/{total} checks passed, {failed} failed")
+    print(f"  {passed}/{total} checks passed, {skipped} skipped, {failed} failed")
 
     if failed:
         print("\nFailed checks:")
         for name, ok, detail in _results:
-            if not ok:
+            if ok is False:
                 print(f"  [FAIL] {name}" + (f": {detail}" if detail else ""))
         sys.exit(1)
     else:
