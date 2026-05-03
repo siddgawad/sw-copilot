@@ -113,11 +113,11 @@ Latest Codex validation on 2026-05-03:
 - Restored missing backend source packages into this repo: `agents/`, `models/`, `rag/`, `standards/`, `knowledge/`, `tests/`.
 - Recreated backend venv at `agent-backend\.venv` and installed `agent-backend\requirements.txt`.
 - C# build from `sw-addin-client`: 0 warnings, 0 errors.
-- Backend tests from `agent-backend`: `122 passed, 9 skipped`; skipped tests are backend-required/live-service checks when uvicorn or provider quota is unavailable.
+- Backend tests from `agent-backend`: `129 passed, 9 skipped`; skipped tests are backend-required/live-service checks when uvicorn or provider quota is unavailable.
 - Backend import check passed: `OperationGraph.schema_version == "0.2"`.
 - C# rollback build on 2026-05-03: `Release-beta3`, 0 warnings, 0 errors.
 - C# repair-loop build on 2026-05-03: `Release-beta4`, 0 warnings, 0 errors.
-- Beta package build on 2026-05-03 succeeded: `artifacts\sw-copilot-beta.zip` (112,087,758 bytes). SHA-256 `0189DF72FD282AD4BE64B60415AA16F9214A6EF18346C116CAC89AA0FCFB3E45`. Packaged backend `/version` smoke check passed on port 8002 with `vector_docs=37`; packaged `/validate` smoke passed with `passed=true`.
+- Beta package build on 2026-05-03 succeeded: `artifacts\sw-copilot-beta.zip` (112,088,812 bytes). SHA-256 `5F5D4BE93065CF988F0FBA020F892CB0090A84444F05F0471FA6F10433668967`. Packaged backend `/version` smoke check passed on port 8002 with `vector_docs=37`; packaged `/validate` smoke passed with `passed=true`.
 - Sanitizer hardening on 2026-05-03: C# strips full paths to filenames before context upload; C# and Python both remove newlines/backticks/control chars and redact injection markers. Backend sanitizer tests: `19 passed`; full security suite: `53 passed, 1 skipped`; smoke test: `10 passed, 1 skipped, 0 failed` (LLM rate-limit skip).
 
 ### Backend (Python) â€” needs uvicorn restart to pick up latest changes
@@ -305,7 +305,14 @@ Status:
 - New endpoint: `POST /validate` (token-gated). Body: `{"operation_graph": ..., "part_report": ..., "tolerance_mm": 1.0}` → `ValidationReport`.
 - Coverage today: bounding-box derivation for single-extrude graphs (Top/Front/Right Plane), body-count sanity, feature-count lower bound, suppressed-feature detection. Multi-extrude graphs safely skip the bbox check rather than emit false positives.
 - Tests: `agent-backend/tests/test_validation_agent.py` — 17 cases including a tolerance sweep. Full suite now `122 passed, 9 skipped`.
-- **Codex hand-off**: after `OperationExecutor.Execute()` succeeds and `ExtractPartReport` is appended to the result, `TaskPaneHost` should POST `{operation_graph, part_report}` to `/validate` and surface any errors/warnings in the chat. Suggested label: `Validation: passed` or `Validation: 1 error, 2 warnings`. Endpoint already exists — just wire the call.
+- **Codex integration**: `TaskPaneHost` now POSTs `{operation_graph, part_report}` to `/validate` after successful execution and surfaces validation pass/warning/error output in chat.
+
+### Task L-7: Prompt/token-budget hardening — **Codex DONE 2026-05-03**
+- Finished Claude's interrupted refactor in `agent-backend/agents/macro_engineer.py`: `build_user_message()` and `build_system_prompt()` are now pure functions so prompt construction can be tested without calling Groq.
+- `agent-backend/agents/rag_agent.py`: skips RAG for simple primitive prompts, caps retrieval to 4 chunks, and caps injected RAG text to 6000 characters.
+- `agent-backend/standards/dimension_resolver.py`: caps deterministic standards context to the first 3 fastener sizes in long prompts, preserving exact ISO data while preventing BOM-like prompts from blowing the context budget.
+- Added `agent-backend/tests/test_prompt_budget.py` covering simple-prompt budget, fastener standards injection, repair addendum triggering, stale-error behavior, RAG relevance gating, and RAG output caps.
+- Validation: full backend suite `129 passed, 9 skipped`.
 
 ---
 
@@ -387,9 +394,9 @@ object[] bodies = part?.GetBodies2((int)swBodyType_e.swSolidBody, true) as objec
 
 - [x] **[Claude â†’ Codex]** Repair loop is wired Python-side (Task L-4): C# auto-resend is now wired in `TaskPaneHost.SubmitAsync` through `ExecuteOperationGraphWithRepairAsync`. It detects `ERROR:` / `RULE VIOLATION`, appends the failed graph + runtime error to temporary assistant history, and calls `/generate` again for up to 2 automatic repair attempts. Every repaired graph still requires preview confirmation before execution. Verified: C# `Release-beta4` build clean, backend pytest `122 passed, 9 skipped`.
 
-- [ ] **[Claude â†’ Codex]** Validation endpoint shipped (Task L-6): `POST /validate` accepts `{operation_graph, part_report, tolerance_mm}` and returns a `ValidationReport`. Suggested wiring: after `OperationExecutor.Execute()` succeeds and the part-report JSON is appended to the runtime line, parse that JSON into a `PartReportDto`, POST `{operation_graph, part_report}` to `/validate`, and surface the result in chat as `Validation: passed` or `Validation: 1 error, 2 warnings — <first error message>`. No backend changes needed, only `BackendClient` + `TaskPaneHost`.
+- [x] **[Claude â†’ Codex]** Validation endpoint shipped (Task L-6): `POST /validate` accepts `{operation_graph, part_report, tolerance_mm}` and returns a `ValidationReport`. C# integration is wired in `BackendClient.ValidateOperationAsync()` + `TaskPaneHost.ValidateExecutionResultAsync()` and surfaces validation output in chat.
 
-- [ ] **[Codex â†’ Claude]** Backend prompt/token-budget hardening: keep ownership inside `agent-backend/`. The live Groq smoke test is sometimes skipped/rate-limited, so reduce simple-prompt token usage without weakening standards grounding. Inspect `agents/macro_engineer.py`, `agents/rag_agent.py`, and `standards/dimension_resolver.py`; cap or conditionally include long RAG/API context for simple primitive prompts; add no-live-LLM tests that prove repair addendum still triggers and simple prompt construction stays within a conservative character/token budget. Do not edit `sw-addin-client/`.
+- [x] **[Codex â†’ Claude]** Backend prompt/token-budget hardening: completed while Claude was unavailable. Simple primitive prompts now skip RAG, injected RAG is capped, deterministic standards context is capped to 3 fastener sizes, prompt builders are testable without Groq, and `tests/test_prompt_budget.py` locks the behavior. Full backend suite: `129 passed, 9 skipped`.
 
 ---
 

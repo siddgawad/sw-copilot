@@ -360,13 +360,19 @@ def extract_fasteners_from_prompt(prompt: str) -> list[str]:
     return seen
 
 
+_MAX_FASTENERS_IN_CONTEXT = 3
+
+
 def build_standards_context(prompt: str) -> tuple[str, list[str]]:
     """
     Scans prompt for fastener references, resolves all dimensional data,
     and returns (context_block, source_refs) for LLM injection.
     This is the deterministic alternative to vector search for numbers.
+
+    Capped at the first _MAX_FASTENERS_IN_CONTEXT fasteners so a long BOM
+    cannot blow the token budget.
     """
-    fasteners = extract_fasteners_from_prompt(prompt)
+    fasteners = extract_fasteners_from_prompt(prompt)[:_MAX_FASTENERS_IN_CONTEXT]
     if not fasteners:
         return "", []
 

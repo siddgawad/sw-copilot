@@ -283,6 +283,34 @@ def _extract_json_object(content: str) -> dict:
     return json.loads(text[start:end + 1])
 
 
+def build_user_message(
+    prompt: str,
+    ctx: DocumentContext,
+    rag_context: str = "",
+) -> str:
+    """
+    Assemble the LLM user message from prompt + deterministic standards block
+    + SolidWorks document context + (optional) RAG context. Pure function so
+    the budget can be asserted in tests without touching the Groq client.
+    """
+    standards_block, _refs = build_standards_context(prompt)
+    return (
+        f"Request:\n{prompt}\n\n"
+        + (f"{standards_block}\n\n" if standards_block else "")
+        + f"SolidWorks Context:\n{_build_context_block(ctx, rag_context)}"
+    )
+
+
+def build_system_prompt(
+    conversation_history: list[ConversationMessage] | None = None,
+) -> str:
+    """Return the system prompt, with the repair addendum appended when the
+    previous assistant turn contains an execution error."""
+    if _has_execution_error(conversation_history):
+        return _SYSTEM_PROMPT + _REPAIR_ADDENDUM
+    return _SYSTEM_PROMPT
+
+
 class MacroEngineerAgent:
     def __init__(self) -> None:
         self._client = Groq(api_key=settings.groq_api_key, timeout=60.0, max_retries=0)
@@ -294,17 +322,8 @@ class MacroEngineerAgent:
         rag_context: str = "",
         conversation_history: list[ConversationMessage] | None = None,
     ) -> OperationGraph:
-        # Deterministic standards lookup — exact ISO numbers injected before LLM sees the prompt.
-        # This replaces vector search for dimensional data (vector search cannot be trusted for numbers).
-        standards_block, _source_refs = build_standards_context(prompt)
-
-        user_message = (
-            f"Request:\n{prompt}\n\n"
-            + (f"{standards_block}\n\n" if standards_block else "")
-            + f"SolidWorks Context:\n{_build_context_block(ctx, rag_context)}"
-        )
-
-        system = _SYSTEM_PROMPT + (_REPAIR_ADDENDUM if _has_execution_error(conversation_history) else "")
+        user_message = build_user_message(prompt, ctx, rag_context)
+        system = build_system_prompt(conversation_history)
         messages: list[dict] = [{"role": "system", "content": system}]
 
         # Inject prior turns so the LLM can see previous dimensions and op IDs.
