@@ -116,6 +116,7 @@ Latest Codex validation on 2026-05-03:
 - Backend tests from `agent-backend`: `47 passed, 1 skipped`; skipped test is live LLM generation when provider quota/rate limit blocks the call.
 - Backend import check passed: `OperationGraph.schema_version == "0.2"`.
 - C# rollback build on 2026-05-03: `Release-beta3`, 0 warnings, 0 errors.
+- Beta package build on 2026-05-03 succeeded: `artifacts\sw-copilot-beta.zip` (~112 MB). Packaged backend `/version` smoke check passed on port 8002 with `vector_docs=37`.
 
 ### Backend (Python) â€” needs uvicorn restart to pick up latest changes
 
@@ -140,6 +141,11 @@ if ($p) { Stop-Process -Id $p -Force; Start-Sleep -Seconds 1 }
 
 **What needs restart to pick up:** All recent Python changes (dimension resolver, rag_agent, macro_engineer, schemas, main).
 
+**Packaged backend:**
+- `agent-backend/run_backend.py` is the PyInstaller entrypoint. It starts uvicorn for `main:app`.
+- `agent-backend/sw_copilot_backend.spec` must point at `run_backend.py`, not `main.py`.
+- Build-only dependency is in `agent-backend/requirements-build.txt`.
+
 ### C# Add-in â€” BUILDS CLEAN (Release-beta3) âœ…
 
 **Build command (close SolidWorks first â€” it locks the DLL):**
@@ -154,6 +160,14 @@ dotnet build SwCopilotAddin.csproj -c Release -p:Platform=x64 -p:RegisterForComI
 .\Register-DevAddin.ps1
 ```
 
+**Build shareable beta package:**
+```powershell
+cd C:\projects\sw-copilot
+agent-backend\.venv\Scripts\python.exe -m pip install -r agent-backend\requirements-build.txt
+.\scripts\Build-BetaPackage.ps1
+```
+Output: `artifacts\sw-copilot-beta.zip`.
+
 **What's implemented and verified:**
 - 12 operation types in OperationExecutor: sketch, extrude_boss, extrude_cut, fillet, chamfer, hole_wizard, circular_pattern, linear_pattern, mirror, revolve, delete_feature, noop
 - All SolidWorks 2021 COM API signatures verified from DLL introspection (correct arg counts and types)
@@ -166,6 +180,7 @@ dotnet build SwCopilotAddin.csproj -c Release -p:Platform=x64 -p:RegisterForComI
 - Post-execution part report appended after successful `OperationExecutor.Execute()` calls
 - Operation graph schema version guard added; non-null versions must equal `"0.2"`
 - Undo Last button added to `TaskPaneHost.cs`; `OperationExecutor.RollbackLastExecute()` deletes the features created by the last operation graph.
+- Release package script added: `scripts\Build-BetaPackage.ps1`.
 
 **Live testing status:**
 - âœ… Box creation works (sketch + extrude_boss)
@@ -348,4 +363,6 @@ object[] bodies = part?.GetBodies2((int)swBodyType_e.swSolidBody, true) as objec
 - [ ] **[Codex â†’ Claude]** After each live test (Task C-3), write results to the test table above. If any operation type fails with a specific COM error, paste it in this queue and Claude will fix the Python planner to avoid generating that pattern.
 
 - [x] **[Codex â†’ Claude]** `Rollback` button is added to TaskPaneHost (Task C-4). Backend can now add a future `rollback_id`/audit field without blocking C# execution.
+
+- [x] **[Codex â†’ Claude]** Packaging pivot: PyInstaller now uses `agent-backend/run_backend.py` so the EXE actually starts uvicorn. If Claude changes backend startup behavior, keep `run_backend.py` and `sw_copilot_backend.spec` in sync. `scripts\Build-BetaPackage.ps1` produces `artifacts\sw-copilot-beta.zip`.
 

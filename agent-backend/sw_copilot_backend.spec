@@ -3,7 +3,7 @@
 # PyInstaller spec for SwCopilotBackend.exe
 #
 # Build from inside agent-backend/ with:
-#   .venv\Scripts\pyinstaller sw_copilot_backend.spec --noconfirm
+#   .venv\Scripts\python -m PyInstaller sw_copilot_backend.spec --noconfirm
 #
 # Output lands in dist/SwCopilotBackend/  (onedir, not onefile)
 # The Build-BetaPackage.ps1 script copies this directory into the package.
@@ -20,14 +20,23 @@ chroma_datas, chroma_binaries, chroma_hiddenimports = collect_all("chromadb")
 pydantic_datas, pydantic_binaries, pydantic_hiddenimports = collect_all("pydantic")
 onnx_datas, onnx_binaries, onnx_hiddenimports = collect_all("onnxruntime")
 
+app_datas = []
+for folder in ("knowledge",):
+    base = Path(folder)
+    if base.exists():
+        for path in base.rglob("*"):
+            if path.is_file():
+                app_datas.append((str(path), str(path.parent)))
+
 a = Analysis(
-    ["main.py"],
+    ["run_backend.py"],
     pathex=["."],
     binaries=chroma_binaries + onnx_binaries,
     datas=(
         chroma_datas
         + pydantic_datas
         + onnx_datas
+        + app_datas
     ),
     hiddenimports=(
         chroma_hiddenimports
@@ -53,6 +62,7 @@ a = Analysis(
             "groq",
             "groq._exceptions",
             # Our app packages
+            "main",
             "agents.macro_engineer",
             "agents.macro_templates",
             "agents.rag_agent",
