@@ -11,10 +11,12 @@ from __future__ import annotations
 
 from models.schemas import OperationGraph
 from patterns.gear import try_generate_gear
+from patterns.shaft import try_generate_shaft
 
 _HANDLERS = [
     try_generate_gear,
-    # add: try_generate_spring, try_generate_v_belt_pulley, etc.
+    try_generate_shaft,
+    # add: try_generate_bracket, try_generate_spring, try_generate_pulley, etc.
 ]
 
 

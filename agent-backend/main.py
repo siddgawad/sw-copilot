@@ -14,6 +14,7 @@ from agents.base_plate_v0 import (
 )
 from agents.macro_engineer import MacroEngineerAgent, try_fast_path_clarification
 from agents.rag_agent import RagAgent
+from agents.run_trace import make_trace_id, save_generate_trace, save_validation_trace
 from agents.validation_agent import validate as validate_graph_against_report
 from patterns.router import try_pattern_match
 from models.schemas import (
@@ -151,8 +152,14 @@ async def generate(req: GenerateRequest) -> GenerateResponse:
     pattern_graph = try_pattern_match(req.prompt)
     if pattern_graph is not None:
         has_missing = bool(pattern_graph.missing_inputs)
+        trace_id = make_trace_id(pattern_graph.part_name)
+        if not has_missing:
+            await run_in_threadpool(
+                save_generate_trace, trace_id, req.prompt, pattern_graph, "pattern"
+            )
         return GenerateResponse(
             operation_graph=pattern_graph,
+            trace_id=trace_id,
             status_message=(
                 "Clarification needed — see missing inputs."
                 if has_missing
@@ -211,10 +218,18 @@ async def generate(req: GenerateRequest) -> GenerateResponse:
         else f"Plan ready: {len(operation_graph.operations)} operation(s) — review before executing."
     )
 
+    # Save run trace for every successful LLM call — this is the training dataset.
+    trace_id = make_trace_id(operation_graph.part_name)
+    if not has_missing:
+        await run_in_threadpool(
+            save_generate_trace, trace_id, req.prompt, operation_graph, "llm"
+        )
+
     return GenerateResponse(
         macro_code=None,
         cad_command=None,
         operation_graph=operation_graph,
+        trace_id=trace_id,
         status_message=status,
         rag_sources=rag_sources,
     )
@@ -258,6 +273,15 @@ async def validate(req: ValidateRequest) -> ValidationReport:
         report,
         req.executor_result,
     )
+    # Save validation artifacts — completes the run trace started at /generate time.
+    if req.trace_id:
+        await run_in_threadpool(
+            save_validation_trace,
+            req.trace_id,
+            req.executor_result,
+            req.part_report,
+            report,
+        )
     return report
 
 

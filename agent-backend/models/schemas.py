@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, List, Literal, Optional, Union
+from typing import Annotated, Any, List, Literal, Optional, Union
 from pydantic import BaseModel, Field, model_validator
 
 
@@ -22,6 +22,85 @@ class GenerateRequest(BaseModel):
     prompt:   str
     context:  DocumentContext            = Field(default_factory=DocumentContext)
     messages: List[ConversationMessage]  = Field(default_factory=list)  # prior turns, oldest first
+
+
+# ── v0.2 deterministic design artifacts ─────────────────────────────────────
+
+class BasePlateParameters(BaseModel):
+    length: float
+    width: float
+    thickness: float
+    hole_count: int = 0
+    hole_diameter: Optional[float] = None
+    hole_offset_x: Optional[float] = None
+    hole_offset_y: Optional[float] = None
+    hole_depth_type: Literal["through_all"] = "through_all"
+
+
+class CoordinateSystemSpec(BaseModel):
+    # SolidWorks Front Plane is the XY sketch plane; extruding its normal gives
+    # model Z thickness for the base_plate_v0 coordinate contract.
+    plane: Literal["Front", "Top"] = "Front"
+    origin_strategy: Literal["centered_on_global_origin"] = "centered_on_global_origin"
+    length_axis: Literal["X"] = "X"
+    width_axis: Literal["Y"] = "Y"
+    thickness_axis: Literal["+Z"] = "+Z"
+
+
+class DesignSpec(BaseModel):
+    part_family: Literal["base_plate"] = "base_plate"
+    units: Literal["mm"] = "mm"
+    parameters: BasePlateParameters
+    coordinate_system: CoordinateSystemSpec = Field(default_factory=CoordinateSystemSpec)
+    assumptions: List[str] = Field(default_factory=list)
+    missing_required_parameters: List[str] = Field(default_factory=list)
+
+
+class BaseRectanglePlan(BaseModel):
+    center: List[float]
+    length: float
+    width: float
+    corners: List[List[float]]
+
+
+class CoordinateHole(BaseModel):
+    id: str
+    center: List[float]
+    diameter: float
+
+
+class CoordinatePlan(BaseModel):
+    units: Literal["mm"] = "mm"
+    base_rectangle: BaseRectanglePlan
+    holes: List[CoordinateHole] = Field(default_factory=list)
+
+
+class SketchGraphSketch(BaseModel):
+    id: str
+    plane: str
+    units: Literal["mm"] = "mm"
+    entities: List[dict[str, Any]] = Field(default_factory=list)
+    constraints: List[dict[str, Any]] = Field(default_factory=list)
+    dimensions: List[dict[str, Any]] = Field(default_factory=list)
+    expected_status: str = "fully_defined"
+
+
+class SketchGraph(BaseModel):
+    sketches: List[SketchGraphSketch] = Field(default_factory=list)
+
+
+class ExecutorOperationResult(BaseModel):
+    operation_id: str
+    operation_type: str
+    status: Literal["success", "failed"]
+    created_feature: Optional[str] = None
+    error_type: Optional[str] = None
+    message: Optional[str] = None
+
+
+class ExecutorRunResult(BaseModel):
+    status: Literal["success", "failed", "not_executed"] = "not_executed"
+    operations: List[ExecutorOperationResult] = Field(default_factory=list)
 
 
 # ── Legacy CadCommand (kept for test-suite backward-compatibility only) ───────
@@ -132,8 +211,27 @@ class LineEntity(BaseModel):
     y2_mm: float
 
 
+class ArcEntity(BaseModel):
+    """
+    Circular arc by centre + radius + start/end angles.
+    Angles are measured CCW from the +X axis (standard math convention).
+    clockwise=False → CCW arc (default for external profiles).
+    clockwise=True  → CW arc (for internal cutouts, holes in profiles).
+
+    C# executor: sketchMgr.CreateArc(cx,cy,0, xStart,yStart,0, xEnd,yEnd,0, dir)
+    where dir = clockwise ? -1 : 1, xStart = cx + r*cos(start_angle_deg*π/180), etc.
+    """
+    type:            Literal["arc"] = "arc"
+    cx_mm:           float
+    cy_mm:           float
+    radius_mm:       float
+    start_angle_deg: float          # CCW from +X, degrees
+    end_angle_deg:   float          # CCW from +X, degrees
+    clockwise:       bool = False
+
+
 SketchEntity = Annotated[
-    Union[RectangleEntity, CircleEntity, LineEntity],
+    Union[RectangleEntity, CircleEntity, LineEntity, ArcEntity],
     Field(discriminator="type"),
 ]
 
@@ -141,6 +239,63 @@ SketchEntity = Annotated[
 class NamedDimension(BaseModel):
     name:     str
     value_mm: float
+
+
+class CreatePartOp(BaseModel):
+    id:   str
+    type: Literal["create_part"] = "create_part"
+
+
+class CreateSketchOp(BaseModel):
+    id:        str
+    type:      Literal["create_sketch"] = "create_sketch"
+    plane:     str = "Top Plane"
+    sketch_id: str
+
+
+class AddCenterRectangleOp(BaseModel):
+    id:        str
+    type:      Literal["add_center_rectangle"] = "add_center_rectangle"
+    sketch_id: str
+    center:    List[float] = Field(default_factory=lambda: [0.0, 0.0])
+    length:    float
+    width:     float
+    units:     Literal["mm"] = "mm"
+
+    @model_validator(mode="after")
+    def _chk(self) -> "AddCenterRectangleOp":
+        if len(self.center) != 2:
+            raise ValueError("add_center_rectangle center must contain [x, y]")
+        if self.length <= 0 or self.width <= 0:
+            raise ValueError("add_center_rectangle length and width must be positive")
+        return self
+
+
+class CirclePrimitive(BaseModel):
+    center:   List[float]
+    diameter: float
+
+    @model_validator(mode="after")
+    def _chk(self) -> "CirclePrimitive":
+        if len(self.center) != 2:
+            raise ValueError("circle center must contain [x, y]")
+        if self.diameter <= 0:
+            raise ValueError("circle diameter must be positive")
+        return self
+
+
+class AddCirclesOp(BaseModel):
+    id:        str
+    type:      Literal["add_circles"] = "add_circles"
+    sketch_id: str
+    circles:   List[CirclePrimitive] = Field(default_factory=list)
+    units:     Literal["mm"] = "mm"
+
+    @model_validator(mode="after")
+    def _chk(self) -> "AddCirclesOp":
+        if not self.circles:
+            raise ValueError("add_circles requires at least one circle")
+        return self
 
 
 class SketchOp(BaseModel):
@@ -152,26 +307,61 @@ class SketchOp(BaseModel):
 
 
 class ExtrudeBossOp(BaseModel):
-    id:         str
-    type:       Literal["extrude_boss"] = "extrude_boss"
-    profile_id: str
-    depth_mm:   float
-    name:       Optional[str] = None
+    id:           str
+    type:         Literal["extrude_boss"] = "extrude_boss"
+    profile_id:   Optional[str] = None
+    sketch_id:    Optional[str] = None
+    depth_mm:     Optional[float] = None
+    depth:        Optional[float] = None
+    name:         Optional[str] = None
+    feature_name: Optional[str] = None
+    direction:    Optional[str] = None
 
     @model_validator(mode="after")
     def _chk(self) -> "ExtrudeBossOp":
-        if self.depth_mm <= 0:
+        if self.profile_id is None and self.sketch_id is not None:
+            self.profile_id = self.sketch_id
+        if self.depth_mm is None and self.depth is not None:
+            self.depth_mm = self.depth
+        if self.name is None and self.feature_name is not None:
+            self.name = self.feature_name
+        if not self.profile_id:
+            raise ValueError("extrude_boss requires profile_id or sketch_id")
+        if self.depth_mm is None or self.depth_mm <= 0:
             raise ValueError("extrude_boss depth_mm must be positive")
         return self
 
 
 class ExtrudeCutOp(BaseModel):
-    id:         str
-    type:       Literal["extrude_cut"] = "extrude_cut"
-    profile_id: str
-    depth_mm:   float = 0.0
-    through_all: bool = True
-    name:       Optional[str] = None
+    id:           str
+    type:         Literal["extrude_cut"] = "extrude_cut"
+    profile_id:   Optional[str] = None
+    sketch_id:    Optional[str] = None
+    depth_mm:     float = 0.0
+    depth:        Optional[float] = None
+    through_all:  bool = True
+    cut_type:     Optional[str] = None
+    name:         Optional[str] = None
+    feature_name: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _chk(self) -> "ExtrudeCutOp":
+        if self.profile_id is None and self.sketch_id is not None:
+            self.profile_id = self.sketch_id
+        if self.depth is not None and self.depth_mm <= 0:
+            self.depth_mm = self.depth
+        if self.name is None and self.feature_name is not None:
+            self.name = self.feature_name
+        if self.cut_type == "through_all":
+            self.through_all = True
+        if not self.profile_id:
+            raise ValueError("extrude_cut requires profile_id or sketch_id")
+        return self
+
+
+class RebuildOp(BaseModel):
+    id:   str
+    type: Literal["rebuild"] = "rebuild"
 
 
 class FilletOp(BaseModel):
@@ -278,7 +468,8 @@ class NoopOp(BaseModel):
 
 Operation = Annotated[
     Union[
-        SketchOp, ExtrudeBossOp, ExtrudeCutOp,
+        CreatePartOp, CreateSketchOp, AddCenterRectangleOp, AddCirclesOp,
+        SketchOp, ExtrudeBossOp, ExtrudeCutOp, RebuildOp,
         FilletOp, ChamferOp, HoleWizardOp,
         CircularPatternOp, LinearPatternOp, MirrorOp,
         RevolveOp, DeleteFeatureOp, NoopOp,
@@ -289,6 +480,8 @@ Operation = Annotated[
 
 class OperationGraph(BaseModel):
     schema_version: str = "0.2"
+    trace_id:       Optional[str]    = None
+    part_family:    Optional[str]    = None
     part_name:      Optional[str]    = None
     reasoning:      Optional[str]    = None  # LLM scratchpad — dimension derivation notes
     operations:     List[Operation]
@@ -309,6 +502,11 @@ class GenerateResponse(BaseModel):
     macro_code:      Optional[str]            = None
     cad_command:     Optional[CadCommand]     = None   # kept for test backward-compat
     operation_graph: Optional[OperationGraph] = None   # primary execution path
+    design_spec:     Optional[DesignSpec]     = None
+    coordinate_plan: Optional[CoordinatePlan] = None
+    sketch_graph:    Optional[SketchGraph]    = None
+    trace_id:        Optional[str]            = None
+    run_artifact_path: Optional[str]          = None
     status_message:  str
     rag_sources:     list[str]                = Field(default_factory=list)
 
@@ -333,12 +531,21 @@ class PartFeatureInfo(BaseModel):
     suppressed: bool = False
 
 
+class PartSketchInfo(BaseModel):
+    name:         str
+    entity_count: Optional[int] = None
+
+
 class PartReport(BaseModel):
-    body_count:    int
-    bounding_box:  Optional[BoundingBox]    = None
-    mass_g:        Optional[float]          = None
-    feature_count: int                      = 0
-    features:      List[PartFeatureInfo]    = Field(default_factory=list)
+    document_type:  str                      = "part"
+    rebuild_status: str                      = "success"
+    body_count:     int
+    bounding_box:   Optional[BoundingBox]    = None
+    bounding_box_mm: Optional[BoundingBox]   = None
+    mass_g:         Optional[float]          = None
+    feature_count:  int                      = 0
+    features:       List[PartFeatureInfo]    = Field(default_factory=list)
+    sketches:       List[PartSketchInfo]     = Field(default_factory=list)
 
 
 # ── Validation report (graph requested vs. report produced) ───────────────────
@@ -347,6 +554,7 @@ class Discrepancy(BaseModel):
     category: Literal[
         "bounding_box", "body_count", "feature_count",
         "missing_feature", "unexpected_feature", "suppressed_feature",
+        "sketch_entity_count", "rebuild_status", "failed_operation",
     ]
     severity: Literal["info", "warning", "error"]
     expected: str
@@ -365,4 +573,6 @@ class ValidationReport(BaseModel):
 class ValidateRequest(BaseModel):
     operation_graph: OperationGraph
     part_report:     PartReport
+    executor_result: Optional[ExecutorRunResult] = None
     tolerance_mm:    float = 1.0
+    trace_id:        Optional[str] = None  # links /validate back to /generate trace folder
