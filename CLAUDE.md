@@ -257,6 +257,31 @@ off when done. Settled items move to `docs/CHANGELOG.md`.*
   `SW-R1-PLAN`, `SW-R1-001`, `SW-R1-002`, `SW-R1-003`, `SW-R1-004`,
   and `SW-R1-005`. Agents should take these before inventing new scope.
 
+- [x] **[Claude]** Multi-provider LLM (quota fix): `macro_engineer.py` now
+  supports NIM / Ollama / Groq with automatic fallback on 429 / connection
+  errors. Set `LLM_PROVIDER=nim` + `NIM_API_KEY=nvapi-...` in `.env` to use
+  NVIDIA NIM free tier (1000 calls/month). `LLM_FALLBACK_CHAIN=ollama` is
+  already wired so Groq quota exhaustion auto-falls back to local Qwen.
+  `156 passed, 9 skipped`. See `agent-backend/config.py` for all settings.
+
+- [ ] **[Claude -> Codex]** SW-CORPUS-001: SolidWorks feature extractor
+  (strategic priority). Extend `OperationExecutor.ExtractPartReport()` into a
+  batch corpus builder that walks a folder of `.sldprt` files and for each
+  part emits a JSON record: `{file, features:[{name,type,suppressed}],
+  sketch_entities:[{plane, segments:[{type,startX,startY,endX,endY,...}]}],
+  dimensional_constraints:[{dim_type,value_mm,ref1,ref2}]}`.
+  API to use:
+  - Feature walk: `doc.FirstFeature()` -> `GetNextFeature()` (already done in ExtractPartReport)
+  - Sketch entities: cast feature to `ISketch` via `f.GetSpecificFeature2()`;
+    call `sketch.GetSketchSegments()` -> returns `object[]` of `ISketchSegment`;
+    each segment: `seg.GetType()` (line/arc/circle), cast to `ISketchLine`,
+    `ISketchArc`, `ISketchEllipse` for coords in metres.
+  - Dimensional constraints: `sketch.GetSketchEquations()` or walk
+    `IDisplayDimension` objects from `ISketch.GetDisplayDimensions2()`.
+  Output format: JSONL (one record per file), written to a configurable
+  output path. This becomes the CAD training corpus.
+  Priority: medium — implement after C-3 live testing completes.
+
 ---
 
 ## Architecture Constraints (never break)
