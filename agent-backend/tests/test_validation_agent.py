@@ -40,7 +40,11 @@ def _box_graph(width: float = 50, depth: float = 30, height: float = 20) -> Oper
 
 
 def _shaft_graph(diameter: float = 40, length: float = 100) -> OperationGraph:
-    """Cylinder on Front Plane (extruded along Y)."""
+    """Cylinder on Front Plane using current executor bbox behavior.
+
+    Live SolidWorks beta6 reports diameter in X/Y and extrusion depth in Z for
+    Front Plane circle extrudes.
+    """
     return OperationGraph(
         operations=[
             SketchOp(
@@ -76,16 +80,68 @@ def test_box_request_matches_box_report():
 
 
 def test_shaft_request_matches_shaft_report():
-    """Front-plane extrude: depth maps to Y axis, not Z."""
+    """Front-plane circle extrude: diameter maps to X/Y and depth maps to Z."""
     graph  = _shaft_graph(diameter=40, length=100)
     report = PartReport(
         body_count=1,
-        bounding_box=BoundingBox(x_mm=40, y_mm=100, z_mm=40),
+        bounding_box=BoundingBox(x_mm=40, y_mm=40, z_mm=100),
         feature_count=1,
         features=[PartFeatureInfo(name="Shaft", type="Extrusion")],
     )
     result = validate(graph, report)
     assert result.passed is True
+
+
+def test_front_plane_circle_diameter_30_extrude_30_bbox():
+    """Bare circle-size semantics are handled upstream as diameter -> radius/2."""
+    graph = _shaft_graph(diameter=30, length=30)
+    report = PartReport(
+        body_count=1,
+        bounding_box=BoundingBox(x_mm=30, y_mm=30, z_mm=30),
+        feature_count=1,
+        features=[PartFeatureInfo(name="Cylinder", type="Extrusion")],
+    )
+
+    result = validate(graph, report)
+
+    assert result.passed is True
+    assert result.expected_summary["bounding_box"] == {
+        "x_mm": 30.0, "y_mm": 30.0, "z_mm": 30.0,
+    }
+
+
+def test_front_plane_circle_radius_30_extrude_30_bbox():
+    graph = _shaft_graph(diameter=60, length=30)
+    report = PartReport(
+        body_count=1,
+        bounding_box=BoundingBox(x_mm=60, y_mm=60, z_mm=30),
+        feature_count=1,
+        features=[PartFeatureInfo(name="Cylinder", type="Extrusion")],
+    )
+
+    result = validate(graph, report)
+
+    assert result.passed is True
+    assert result.expected_summary["bounding_box"] == {
+        "x_mm": 60.0, "y_mm": 60.0, "z_mm": 30.0,
+    }
+
+
+def test_top_plane_box_width_depth_height_mapping_from_live_failure():
+    graph = _box_graph(width=50, depth=30, height=20)
+    report = PartReport(
+        body_count=1,
+        bounding_box=BoundingBox(x_mm=50, y_mm=30, z_mm=20),
+        feature_count=1,
+        features=[PartFeatureInfo(name="Box", type="Extrusion")],
+    )
+
+    result = validate(graph, report)
+
+    assert result.passed is True
+    assert result.expected_summary["bounding_box"] == {
+        "x_mm": 50.0, "y_mm": 30.0, "z_mm": 20.0,
+    }
 
 
 def test_within_tolerance_passes():

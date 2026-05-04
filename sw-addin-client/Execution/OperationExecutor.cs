@@ -463,26 +463,10 @@ namespace SwCopilotAddin.Execution
             double holeDiameterMm = HoleDiameterMm(op.FastenerSize ?? "M6", op.HoleType ?? "simple");
             double holeRadius = holeDiameterMm / 2.0 / 1000.0; // to metres
 
-            // Resolve the sketch plane:
-            //   1. Standard plane name → select it directly
-            //   2. Known feature ID in registry → select top face
-            //   3. Unknown → select top face of the tallest body in the model
+            // Resolve a standard plane directly, otherwise choose the highest
+            // horizontal planar face from feature/body geometry.
             string faceOf = op.FaceOf!;
-            bool planeReady;
-            if (faceOf == "Top Plane" || faceOf == "Front Plane" || faceOf == "Right Plane")
-            {
-                doc.ClearSelection2(true);
-                planeReady = doc.Extension.SelectByID2(faceOf, "PLANE", 0, 0, 0, false, 0, null, 0);
-            }
-            else if (_features.TryGetValue(faceOf, out Feature registeredFeat))
-            {
-                planeReady = SelectFaceOfFeature(doc, registeredFeat, topFace: true);
-            }
-            else
-            {
-                // Feature not in registry (e.g. follow-up request): use highest face on any body.
-                planeReady = SelectTopFaceOfBody(doc);
-            }
+            bool planeReady = SelectHoleSketchReference(doc, faceOf);
 
             if (!planeReady)
                 return $"ERROR: Could not select sketch plane for holes (face_of='{faceOf}')";
@@ -766,7 +750,7 @@ namespace SwCopilotAddin.Execution
         /// </summary>
         private bool SelectPlaneOrFace(IModelDoc2 doc, string plane)
         {
-            if (plane == "Top Plane" || plane == "Front Plane" || plane == "Right Plane")
+            if (IsStandardPlaneName(plane))
             {
                 doc.ClearSelection2(true);
                 return doc.Extension.SelectByID2(plane, "PLANE", 0, 0, 0, false, 0, null, 0);
@@ -783,80 +767,198 @@ namespace SwCopilotAddin.Execution
             return false;
         }
 
+        private bool SelectHoleSketchReference(IModelDoc2 doc, string faceOf)
+        {
+            if (IsStandardPlaneName(faceOf))
+            {
+                doc.ClearSelection2(true);
+                return doc.Extension.SelectByID2(faceOf, "PLANE", 0, 0, 0, false, 0, null, 0);
+            }
+
+            if (_features.TryGetValue(faceOf, out Feature registeredFeat) &&
+                SelectFaceOfFeature(doc, registeredFeat, topFace: true))
+            {
+                return true;
+            }
+
+            // Feature references can be stale or absent in follow-up requests. Fall back to
+            // actual solid geometry and select the highest horizontal planar face.
+            return SelectTopFaceOfBody(doc);
+        }
+
+        private static bool IsStandardPlaneName(string plane)
+        {
+            return plane == "Top Plane" || plane == "Front Plane" || plane == "Right Plane";
+        }
+
         /// <summary>
-        /// Selects the top or bottom face of a feature using bounding-box midpoint.
+        /// Selects the top or bottom horizontal planar face exposed by a feature.
         /// </summary>
         private static bool SelectFaceOfFeature(IModelDoc2 doc, Feature feature, bool topFace)
         {
-            object[]? faceArr = feature.GetFaces() as object[];
-            if (faceArr == null || faceArr.Length == 0) return false;
-
-            Face2? chosen = null;
-            double extreme = topFace ? double.MinValue : double.MaxValue;
-
-            foreach (object o in faceArr)
+            object[]? faceArr;
+            try
             {
-                if (!(o is Face2 face)) continue;
-                double[]? box = face.GetBox() as double[];
-                if (box == null || box.Length < 6) continue;
-                double midZ = (box[2] + box[5]) / 2.0;
-                if (topFace ? midZ > extreme : midZ < extreme)
-                {
-                    extreme = midZ;
-                    chosen  = face;
-                }
+                faceArr = feature.GetFaces() as object[];
+            }
+            catch
+            {
+                return false;
             }
 
-            if (chosen == null) return false;
-            doc.ClearSelection2(true);
-            ((IEntity)chosen).Select4(false, null);
-            return true;
-        }
-
-        private bool SelectTopFaceOfFeature(IModelDoc2 doc, string featureId)
-        {
-            if (_features.TryGetValue(featureId, out Feature feat))
-                return SelectFaceOfFeature(doc, feat, topFace: true);
-            return false;
+            return SelectPlanarFaceByZ(doc, FaceObjects(faceArr), topFace);
         }
 
         /// <summary>
-        /// Selects the topmost face (highest midZ) across all solid bodies in the document.
+        /// Selects the topmost horizontal planar face across all solid bodies in the document.
         /// Used as a fallback when the LLM references a feature not in the current registry.
         /// </summary>
         private static bool SelectTopFaceOfBody(IModelDoc2 doc)
         {
-            IPartDoc? part = doc as IPartDoc;
-            object[]? bodies = part?.GetBodies2((int)swBodyType_e.swSolidBody, true) as object[];
-            if (bodies == null || bodies.Length == 0) return false;
+            return SelectPlanarFaceByZ(doc, CollectSolidBodyFaces(doc), topFace: true);
+        }
 
+        private static bool SelectPlanarFaceByZ(IModelDoc2 doc, IEnumerable<Face2> faces, bool topFace)
+        {
             Face2? chosen = null;
-            double highestZ = double.MinValue;
+            double extremeZ = topFace ? double.MinValue : double.MaxValue;
+            double chosenArea = double.MinValue;
 
-            foreach (object bodyObj in bodies)
+            foreach (Face2 face in faces)
             {
-                if (!(bodyObj is IBody2 body)) continue;
-                object[]? faces = body.GetFaces() as object[];
-                if (faces == null) continue;
+                double[]? box = GetFaceBox(face);
+                if (box == null || !IsHorizontalPlanarFace(face, box))
+                    continue;
 
-                foreach (object faceObj in faces)
+                double faceZ = topFace ? box[5] : box[2];
+                double area = GetFaceArea(face);
+                bool betterZ = topFace
+                    ? faceZ > extremeZ + 1e-7
+                    : faceZ < extremeZ - 1e-7;
+                bool sameZLargerFace = Math.Abs(faceZ - extremeZ) <= 1e-7 && area > chosenArea;
+
+                if (chosen == null || betterZ || sameZLargerFace)
                 {
-                    if (!(faceObj is Face2 face)) continue;
-                    double[]? box = face.GetBox() as double[];
-                    if (box == null || box.Length < 6) continue;
-                    double midZ = (box[2] + box[5]) / 2.0;
-                    if (midZ > highestZ)
-                    {
-                        highestZ = midZ;
-                        chosen   = face;
-                    }
+                    extremeZ = faceZ;
+                    chosen = face;
+                    chosenArea = area;
                 }
             }
 
             if (chosen == null) return false;
-            doc.ClearSelection2(true);
-            ((IEntity)chosen).Select4(false, null);
-            return true;
+            return SelectFace(doc, chosen);
+        }
+
+        private static IEnumerable<Face2> FaceObjects(object[]? faceArr)
+        {
+            if (faceArr == null) yield break;
+
+            foreach (object faceObj in faceArr)
+            {
+                if (faceObj is Face2 face)
+                    yield return face;
+            }
+        }
+
+        private static IEnumerable<Face2> CollectSolidBodyFaces(IModelDoc2 doc)
+        {
+            IPartDoc? part = doc as IPartDoc;
+            object[]? bodies = part?.GetBodies2((int)swBodyType_e.swSolidBody, true) as object[];
+            if (bodies == null) yield break;
+
+            foreach (object bodyObj in bodies)
+            {
+                if (!(bodyObj is IBody2 body)) continue;
+
+                object[]? faces = body.GetFaces() as object[];
+                foreach (Face2 face in FaceObjects(faces))
+                    yield return face;
+            }
+        }
+
+        private static bool SelectFace(IModelDoc2 doc, Face2 face)
+        {
+            try
+            {
+                doc.ClearSelection2(true);
+                return ((IEntity)face).Select4(false, null);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool IsHorizontalPlanarFace(Face2 face, double[] box)
+        {
+            if (!IsPlanarFace(face))
+                return false;
+
+            if (Math.Abs(box[5] - box[2]) <= 1e-5)
+                return true;
+
+            double[]? normal = GetFaceNormal(face);
+            return normal != null && normal.Length >= 3 && Math.Abs(normal[2]) >= 0.707;
+        }
+
+        private static bool IsPlanarFace(Face2 face)
+        {
+            try
+            {
+                Surface? surface = face.GetSurface() as Surface;
+                if (surface != null)
+                    return surface.IsPlane();
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                Surface? surface = face.IGetSurface();
+                return surface != null && surface.IsPlane();
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static double[]? GetFaceBox(Face2 face)
+        {
+            try
+            {
+                double[]? box = ToDoubleArray(face.GetBox());
+                return box != null && box.Length >= 6 ? box : null;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static double[]? GetFaceNormal(Face2 face)
+        {
+            try
+            {
+                return ToDoubleArray(face.Normal);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static double GetFaceArea(Face2 face)
+        {
+            try
+            {
+                return face.GetArea();
+            }
+            catch
+            {
+                return 0.0;
+            }
         }
 
         private void SelectRegisteredFeature(IModelDoc2 doc, string opId)

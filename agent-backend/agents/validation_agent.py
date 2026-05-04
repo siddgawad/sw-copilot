@@ -33,7 +33,11 @@ from models.schemas import (
 
 _PLANE_TO_EXTRUDE_AXIS: dict[str, str] = {
     "Top Plane":   "z",
-    "Front Plane": "y",
+    # Live SW 2021 beta6 evidence showed the current C# executor creates
+    # Front Plane circle extrudes with diameter in X/Y and depth in Z.
+    # Keep validation aligned to observed executor behavior, not nominal CAD
+    # plane theory, until the executor adopts plane-local coordinate reporting.
+    "Front Plane": "z",
     "Right Plane": "x",
 }
 
