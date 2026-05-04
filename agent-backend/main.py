@@ -7,9 +7,15 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from groq import APIConnectionError, APIError, APIStatusError, APITimeoutError
 from starlette.concurrency import run_in_threadpool
 
+from agents.base_plate_v0 import (
+    try_compile_base_plate_v0,
+    update_run_artifacts_after_validation,
+    write_initial_run_artifacts,
+)
 from agents.macro_engineer import MacroEngineerAgent, try_fast_path_clarification
 from agents.rag_agent import RagAgent
 from agents.validation_agent import validate as validate_graph_against_report
+from patterns.router import try_pattern_match
 from models.schemas import (
     DocumentContext, GenerateRequest, GenerateResponse,
     IngestResponse, OperationGraph,
@@ -100,7 +106,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="SW Copilot — Agent Backend",
     version="0.1.0",
-    description="Receives natural-language prompts from the SolidWorks Add-in and returns executable C# macros.",
+    description="Receives natural-language prompts from the SolidWorks Add-in and returns validated CAD OperationGraph JSON.",
     lifespan=lifespan,
 )
 
@@ -112,13 +118,48 @@ async def generate(req: GenerateRequest) -> GenerateResponse:
     """
     Main endpoint called by the C# Add-in.
     1. Optionally retrieves engineering standards context from ChromaDB (RAG Agent).
-    2. Passes the enriched prompt to the Macro Engineer Agent (Groq LLM).
-    3. Returns the raw C# macro string to the Add-in for runtime compilation.
+    2. Passes the enriched prompt to the Macro Engineer Agent/provider router.
+    3. Returns a validated OperationGraph JSON object to the Add-in.
     """
+    base_plate = try_compile_base_plate_v0(req.prompt)
+    if base_plate is not None:
+        trace_id, run_dir = write_initial_run_artifacts(req.prompt, base_plate)
+        has_missing = bool(base_plate.operation_graph.missing_inputs)
+        return GenerateResponse(
+            macro_code=None,
+            cad_command=None,
+            operation_graph=base_plate.operation_graph,
+            design_spec=base_plate.design_spec,
+            coordinate_plan=base_plate.coordinate_plan,
+            sketch_graph=base_plate.sketch_graph,
+            trace_id=trace_id,
+            run_artifact_path=str(run_dir),
+            status_message=(
+                "Unsupported base_plate_v0 request — see missing inputs."
+                if has_missing
+                else "base_plate_v0 deterministic plan ready — no LLM call required."
+            ),
+            rag_sources=[],
+        )
+
     if macro_agent is None or rag_agent is None:
         raise HTTPException(status_code=503, detail="Agents not yet initialised.")
 
     sanitized_context = _sanitize_context(req.context)
+
+    # ── Deterministic pattern library (runs before any LLM call) ─────────────
+    pattern_graph = try_pattern_match(req.prompt)
+    if pattern_graph is not None:
+        has_missing = bool(pattern_graph.missing_inputs)
+        return GenerateResponse(
+            operation_graph=pattern_graph,
+            status_message=(
+                "Clarification needed — see missing inputs."
+                if has_missing
+                else f"Deterministic pattern: {pattern_graph.part_name or 'part'} — no LLM call required."
+            ),
+            rag_sources=[],
+        )
 
     fast_path_graph = try_fast_path_clarification(req.prompt, req.messages)
     if fast_path_graph is not None:
@@ -144,22 +185,24 @@ async def generate(req: GenerateRequest) -> GenerateResponse:
         )
     except ValueError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=f"LLM provider error: {exc}") from exc
     except APITimeoutError as exc:
-        raise HTTPException(status_code=504, detail="Groq request timed out.") from exc
+        raise HTTPException(status_code=504, detail="LLM provider request timed out.") from exc
     except APIConnectionError as exc:
-        raise HTTPException(status_code=502, detail="Could not connect to Groq.") from exc
+        raise HTTPException(status_code=502, detail="Could not connect to LLM provider.") from exc
     except APIStatusError as exc:
         if exc.status_code == 429:
             raise HTTPException(
                 status_code=429,
-                detail=f"Groq rate limit reached. Retry shortly. Provider response: {exc.response.text}",
+                detail=f"LLM provider rate limit reached. Retry shortly. Provider response: {exc.response.text}",
             ) from exc
         raise HTTPException(
             status_code=502,
-            detail=f"Groq API returned {exc.status_code}: {exc.response.text}",
+            detail=f"LLM provider returned {exc.status_code}: {exc.response.text}",
         ) from exc
     except APIError as exc:
-        raise HTTPException(status_code=502, detail=f"Groq API error: {exc}") from exc
+        raise HTTPException(status_code=502, detail=f"LLM provider API error: {exc}") from exc
 
     has_missing = bool(operation_graph.missing_inputs)
     status = (
@@ -203,11 +246,19 @@ async def validate(req: ValidateRequest) -> ValidationReport:
     actually built). Returns a ValidationReport flagging any discrepancies in
     bounding box, body count, feature count, or suppressed features.
     """
-    return validate_graph_against_report(
+    report = validate_graph_against_report(
         req.operation_graph,
         req.part_report,
         tolerance_mm=req.tolerance_mm,
+        executor_result=req.executor_result,
     )
+    update_run_artifacts_after_validation(
+        req.operation_graph,
+        req.part_report,
+        report,
+        req.executor_result,
+    )
+    return report
 
 
 @app.get("/version")

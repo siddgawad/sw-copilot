@@ -81,7 +81,7 @@ C:\projects\sw-copilot\
 
 ## Current State (2026-05-04)
 
-**Backend:** `156 passed, 9 skipped`. `OperationGraph.schema_version == "0.2"`.
+**Backend:** `178 passed, 9 skipped`. `OperationGraph.schema_version == "0.2"`.
 RAG: 37 chunks in ChromaDB, keyword-gated, capped. Endpoints:
 `/generate /validate /ingest /health /version`. All token-gated except `/version`.
 Multi-provider LLM: NIM (primary when `LLM_PROVIDER=nim`) / Ollama (local fallback) / Groq (default).
@@ -93,6 +93,35 @@ Currently `.env` defaults to Groq primary + Ollama fallback.
 Repair-loop, rollback, validation surfacing all wired.
 
 **Local agent:** `qwen2.5-coder:7b` pulled via Ollama. See playbook for usage.
+
+**v0.2 deterministic slice (Codex, 2026-05-04):**
+- Implemented `base_plate_v0` for prompts like
+  `make a 120x80x10mm base plate with four 6mm holes 10mm from corners`.
+- Path is provider-free: prompt -> `DesignSpec` -> `CoordinatePlan` ->
+  `SketchGraph` -> v0.2 `OperationGraph` -> deterministic C# executor ->
+  `PartReport` -> `ValidationReport` -> `runs/<trace_id>/` artifacts.
+- New operation aliases supported by C# executor:
+  `create_part`, `create_sketch`, `add_center_rectangle`, `add_circles`,
+  `extrude_boss`, `extrude_cut`, `rebuild`.
+- Backend tests: `178 passed, 9 skipped`.
+- C# compile check: `dotnet build SwCopilotAddin.csproj -c Release
+  -p:Platform=x64 -p:RegisterForComInterop=false
+  -p:OutDir=...\CodexVerify\net48\` -> `0 Warning(s), 0 Error(s)`.
+  Normal Release output was locked by running SolidWorks PID `59660`.
+- First live SolidWorks test showed the deterministic JSON path worked, but
+  the initial plane contract was wrong (`Top Plane` made a `120 x 10 x 80`
+  standing plate). v0.2 now uses SolidWorks `Front Plane` as the XY sketch
+  plane so thickness extrudes along model Z. Retest after rebuild/register.
+- Retest passed for the base-plate prompt: executor created
+  `BasePlate_Extrude`, `Mounting_Holes_Cut`, bbox `120 x 80 x 10`, and
+  validation passed.
+- Follow-up `add 2mm fillet to all edges` failed three times. This is a
+  separate C# edge-selection/fillet executor bug, not a base-plate intent bug:
+  the old fillet path collects feature edges broadly and calls
+  `FeatureManager.FeatureFillet`; it needs a deterministic body-edge resolver
+  for "all edges" and duplicate/invalid edge filtering.
+- Deterministic `base_plate_v0` failures no longer auto-repair by regenerating
+  the same JSON graph; the UI validates/records trace artifacts and stops.
 
 **Live testing status (Codex owns):**
 - Beta6 live test on 2026-05-03 found release blockers. Evidence is also
@@ -176,6 +205,9 @@ Current release architecture is:
 
 `prompt -> intent router -> deterministic pattern library -> OperationGraph -> C# executor -> PartReport -> validation`
 
+Intent-to-JSON strategy lives in `docs/INTENT_TO_JSON_STRATEGY.md`. This is
+now the priority before expanding SolidWorks feature coverage.
+
 Routing for the next build wave:
 - `sw-builder-a`: local Ollama coding builder for backend fast-path router and primary implementation tasks.
 - `sw-builder-b`: local Ollama coding builder for secondary implementation, SWIR, tests, and reviewable patches.
@@ -257,12 +289,98 @@ off when done. Settled items move to `docs/CHANGELOG.md`.*
   `SW-R1-PLAN`, `SW-R1-001`, `SW-R1-002`, `SW-R1-003`, `SW-R1-004`,
   and `SW-R1-005`. Agents should take these before inventing new scope.
 
+- [x] **[Codex -> all]** SW Copilot v0.2 base-plate slice implemented:
+  deterministic `base_plate_v0` parser/compiler added in
+  `agent-backend/agents/base_plate_v0.py`; schemas extended for
+  `DesignSpec`, `CoordinatePlan`, `SketchGraph`, structured executor results,
+  and run artifacts; C# executor now supports coordinate-first sketch aliases
+  and appends `Runtime (executor_result): ...`; `/validate` updates saved run
+  artifacts when `trace_id` is present. Live test found a plane-contract bug:
+  using SolidWorks `Top Plane` produced `120 x 10 x 80`; v0.2 now uses
+  `Front Plane` for XY base-plate sketches. Deterministic failures skip
+  auto-repair to avoid repeating identical JSON. Tests: backend
+  `178 passed, 9 skipped`; C# compile-check build `0 Warning(s), 0 Error(s)`.
+
 - [x] **[Claude]** Multi-provider LLM (quota fix): `macro_engineer.py` now
   supports NIM / Ollama / Groq with automatic fallback on 429 / connection
-  errors. Set `LLM_PROVIDER=nim` + `NIM_API_KEY=nvapi-...` in `.env` to use
-  NVIDIA NIM free tier (1000 calls/month). `LLM_FALLBACK_CHAIN=ollama` is
-  already wired so Groq quota exhaustion auto-falls back to local Qwen.
-  `156 passed, 9 skipped`. See `agent-backend/config.py` for all settings.
+  errors. Set `LLM_PROVIDER=nim` + `NIM_API_KEY=nvapi-...` in `.env` to test
+  NVIDIA NIM through its OpenAI-compatible API. `LLM_FALLBACK_CHAIN=ollama`
+  routes quota/connection failures to local Qwen when configured. Provider
+  router tests were added in `test_macro_engineer_prompt.py`; full backend
+  suite is `178 passed, 9 skipped`. See `agent-backend/config.py` and
+  `agent-backend/.env.example` for all settings.
+
+- [ ] **[Claude -> Codex]** SW-FILLET-001: Fix fillet/chamfer edge selector.
+  **Root cause diagnosed:** `SelectEdgesForFillet` iterates faces of user
+  features and calls `face.GetEdges()`.  The same edge borders two adjacent
+  faces, so it gets added to the selection twice.  SolidWorks rejects a
+  duplicate-edge fillet selection.  Also, extrude-cut (hole) interior edges
+  are selected alongside boss edges — some of those can't be filleted at the
+  same radius and cause the whole operation to fail.
+  **Fix:** Replace the face-based edge walk with a body-based edge walk:
+  ```csharp
+  private bool SelectEdgesForFillet(IModelDoc2 doc, string[] featureIds)
+  {
+      doc.ClearSelection2(true);
+      bool anySelected = false;
+
+      if (featureIds == null || featureIds.Length == 0)
+      {
+          // "all edges" → walk solid bodies to get unique edge set
+          IPartDoc part = doc as IPartDoc;
+          object[] bodies = part?.GetBodies2(
+              (int)swBodyType_e.swSolidBody, true) as object[];
+          if (bodies == null) return false;
+          var seen = new HashSet<IntPtr>();
+          foreach (object bodyObj in bodies)
+          {
+              IBody2 body = bodyObj as IBody2;
+              if (body == null) continue;
+              object[] edges = body.GetEdges() as object[];
+              if (edges == null) continue;
+              foreach (object edgeObj in edges)
+              {
+                  // Use COM identity pointer for deduplication
+                  IntPtr ptr = System.Runtime.InteropServices.Marshal
+                      .GetIUnknownForObject(edgeObj);
+                  System.Runtime.InteropServices.Marshal.Release(ptr);
+                  if (!seen.Add(ptr)) continue;
+                  try {
+                      ((IEntity)edgeObj).Select4(anySelected, null);
+                      anySelected = true;
+                  } catch { }
+              }
+          }
+      }
+      else
+      {
+          // Named features: walk their faces (existing logic)
+          foreach (string fid in featureIds)
+          {
+              if (!_features.TryGetValue(fid, out Feature feat)) continue;
+              object[] faceArr = feat.GetFaces() as object[];
+              if (faceArr == null) continue;
+              foreach (object faceObj in faceArr)
+              {
+                  Face2 face = faceObj as Face2;
+                  if (face == null) continue;
+                  object[] edgeArr = face.GetEdges() as object[];
+                  if (edgeArr == null) continue;
+                  foreach (object edgeObj in edgeArr)
+                  {
+                      try {
+                          ((IEntity)edgeObj).Select4(anySelected, null);
+                          anySelected = true;
+                      } catch { }
+                  }
+              }
+          }
+      }
+      return anySelected;
+  }
+  ```
+  File: `sw-addin-client/Execution/OperationExecutor.cs`
+  Report pass/fail in Handoff Queue after rebuild.
 
 - [ ] **[Claude -> Codex]** SW-CORPUS-001: SolidWorks feature extractor
   (strategic priority). Extend `OperationExecutor.ExtractPartReport()` into a
@@ -282,6 +400,19 @@ off when done. Settled items move to `docs/CHANGELOG.md`.*
   output path. This becomes the CAD training corpus.
   Priority: medium — implement after C-3 live testing completes.
 
+- [ ] **[Codex -> Codex]** SW-FILLET-001: Fix follow-up fillet execution.
+  Live test after successful `base_plate_v0` creation showed
+  `add 2mm fillet to all edges` repeatedly failed with
+  `ERROR: Fillet failed — edges may not support this radius`. Root cause is
+  likely executor-side edge selection, not planner intent: `ExecFillet()`
+  uses `SelectEdgesForFillet()` over broad feature faces and then
+  `FeatureManager.FeatureFillet`; follow-up execution has no reliable
+  per-run `_features` refs and may select duplicate/invalid edges from
+  sketches/cuts. Required fix: add deterministic body-edge selection for
+  `feature_ids=[]` / "all edges", filter duplicate edge entities, preferably
+  apply external body edges first, and return selected edge count in runtime.
+  Add a live-test gate for 2mm fillet on the v0.2 base plate.
+
 ---
 
 ## Architecture Constraints (never break)
@@ -293,6 +424,6 @@ off when done. Settled items move to `docs/CHANGELOG.md`.*
 | All SW COM dimensions in metres | Internal unit. `Mm()` helper converts |
 | `dimension_resolver.py` for all ISO numbers | Vector search cannot be trusted for exact dimensions |
 | `EmbedInteropTypes=false` on SW interop refs | SW loads from its own dir; embedding breaks COM identity |
-| `response_format={"type":"json_object"}` on Groq | Enforces JSON; retry loop corrects schema failures |
+| `response_format={"type":"json_object"}` on provider calls | Enforces JSON; retry loop corrects schema failures |
 | ChromaDB holds explanatory text only | Exact numbers -> dict in dimension_resolver |
 | `_features` dict is per-Execute-call | Cross-request refs fall back to `SelectTopFaceOfBody()` |
