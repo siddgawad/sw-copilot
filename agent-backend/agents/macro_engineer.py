@@ -2,7 +2,9 @@ import json
 import re
 import time
 
+import openai as _openai
 from groq import APIStatusError, Groq
+from openai import OpenAI as _OpenAI
 from pydantic import ValidationError
 
 from config import settings
@@ -542,9 +544,106 @@ def build_system_prompt(
     return prompt
 
 
+class _ProviderQuotaError(Exception):
+    """Provider hit its rate/quota limit — caller should try the next provider."""
+
+
 class MacroEngineerAgent:
     def __init__(self) -> None:
-        self._client = Groq(api_key=settings.groq_api_key, timeout=60.0, max_retries=0)
+        self._provider = settings.llm_provider
+        self._fallbacks = [
+            p.strip()
+            for p in settings.llm_fallback_chain.split(",")
+            if p.strip() and p.strip() != self._provider
+        ]
+        self._groq = (
+            Groq(api_key=settings.groq_api_key, timeout=60.0, max_retries=0)
+            if settings.groq_api_key else None
+        )
+        self._nim = (
+            _OpenAI(api_key=settings.nim_api_key, base_url=settings.nim_base_url, timeout=60.0)
+            if settings.nim_api_key else None
+        )
+        # Ollama is always available as a local option; it handles connection errors itself.
+        self._ollama = _OpenAI(
+            api_key="ollama",
+            base_url=settings.ollama_base_url,
+            timeout=90.0,
+        )
+
+    def _call_groq(self, messages: list[dict]) -> str:
+        if not self._groq:
+            raise _ProviderQuotaError("Groq not configured (no GROQ_API_KEY)")
+        for rate_attempt in range(_MAX_RATE_LIMIT_RETRIES + 1):
+            try:
+                completion = self._groq.chat.completions.create(
+                    model=settings.groq_model,
+                    messages=messages,
+                    temperature=0.0,
+                    max_tokens=_LLM_MAX_TOKENS,
+                    response_format={"type": "json_object"},
+                )
+                return completion.choices[0].message.content or ""
+            except APIStatusError as exc:
+                if exc.status_code == 429:
+                    if rate_attempt >= _MAX_RATE_LIMIT_RETRIES:
+                        raise _ProviderQuotaError("Groq daily quota exhausted") from exc
+                    time.sleep(_rate_limit_delay_seconds(exc))
+                else:
+                    raise
+
+        return ""  # unreachable — satisfies type checker
+
+    def _call_openai_compat(
+        self,
+        client: _OpenAI,
+        model: str,
+        messages: list[dict],
+        *,
+        json_mode: bool = True,
+    ) -> str:
+        kwargs: dict = dict(
+            model=model,
+            messages=messages,
+            temperature=0.0,
+            max_tokens=_LLM_MAX_TOKENS,
+        )
+        if json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
+        try:
+            completion = client.chat.completions.create(**kwargs)
+            return completion.choices[0].message.content or ""
+        except _openai.RateLimitError as exc:
+            raise _ProviderQuotaError("Provider quota exceeded") from exc
+        except _openai.APIConnectionError as exc:
+            raise _ProviderQuotaError("Provider unavailable (connection error)") from exc
+
+    def _call_provider(self, provider: str, messages: list[dict]) -> str:
+        if provider == "groq":
+            return self._call_groq(messages)
+        if provider == "nim":
+            if not self._nim:
+                raise _ProviderQuotaError("NIM not configured (no NIM_API_KEY)")
+            return self._call_openai_compat(self._nim, settings.nim_model, messages, json_mode=True)
+        if provider == "ollama":
+            return self._call_openai_compat(
+                self._ollama, settings.ollama_model, messages, json_mode=True
+            )
+        raise ValueError(f"Unknown LLM provider: {provider!r}")
+
+    def _call_with_fallback(self, messages: list[dict]) -> str:
+        providers = [self._provider] + self._fallbacks
+        last_quota_error: Exception | None = None
+        for provider in providers:
+            try:
+                return self._call_provider(provider, messages)
+            except _ProviderQuotaError as exc:
+                last_quota_error = exc
+                continue
+        raise RuntimeError(
+            f"All LLM providers are unavailable or over quota. "
+            f"Tried: {providers}. Last error: {last_quota_error}"
+        ) from last_quota_error
 
     def generate(
         self,
@@ -558,30 +657,13 @@ class MacroEngineerAgent:
         system = build_system_prompt(conversation_history)
         messages: list[dict] = [{"role": "system", "content": system}]
 
-        # Inject prior turns so the LLM can see previous dimensions and op IDs.
         for msg in (conversation_history or []):
             messages.append({"role": msg.role, "content": msg.content})
-
         messages.append({"role": "user", "content": user_message})
 
         last_error: Exception | None = None
         for attempt in range(2):
-            for rate_attempt in range(_MAX_RATE_LIMIT_RETRIES + 1):
-                try:
-                    completion = self._client.chat.completions.create(
-                        model=settings.groq_model,
-                        messages=messages,
-                        temperature=0.0,
-                        max_tokens=_LLM_MAX_TOKENS,
-                        response_format={"type": "json_object"},
-                    )
-                    break
-                except APIStatusError as exc:
-                    if exc.status_code != 429 or rate_attempt >= _MAX_RATE_LIMIT_RETRIES:
-                        raise
-                    time.sleep(_rate_limit_delay_seconds(exc))
-
-            content = completion.choices[0].message.content or ""
+            content = self._call_with_fallback(messages)
             try:
                 return OperationGraph.model_validate(_extract_json_object(content))
             except (json.JSONDecodeError, ValidationError, ValueError) as exc:

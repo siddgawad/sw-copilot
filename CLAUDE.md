@@ -81,10 +81,12 @@ C:\projects\sw-copilot\
 
 ## Current State (2026-05-04)
 
-**Backend:** `129+ passed, 9 skipped`. `OperationGraph.schema_version == "0.2"`.
+**Backend:** `156 passed, 9 skipped`. `OperationGraph.schema_version == "0.2"`.
 RAG: 37 chunks in ChromaDB, keyword-gated, capped. Endpoints:
-`/generate /validate /ingest /health /version`. All token-gated except
-`/version`.
+`/generate /validate /ingest /health /version`. All token-gated except `/version`.
+Multi-provider LLM: NIM (primary when `LLM_PROVIDER=nim`) / Ollama (local fallback) / Groq (default).
+Automatic quota fallback: if primary hits 429, tries next provider in `LLM_FALLBACK_CHAIN`.
+Currently `.env` defaults to Groq primary + Ollama fallback.
 
 **C# Add-in:** Latest clean build is `Release-beta6`. Beta package:
 `artifacts\sw-copilot-beta6.zip`. 12 op types implemented.
@@ -162,10 +164,10 @@ aider --model ollama/qwen2.5-coder:7b --no-auto-commits
 
 ## Routing rule (one-line summary)
 
-Scripts -> Qwen (single-file mechanical) -> Codex medium (multi-file routine)
--> Claude Sonnet (architecture/review) -> Opus (high-stakes final). Whoever
-assigns the task **trims context for the receiver**, especially Qwen which
-has only 32K. Full rules in `docs/AGENT_PLAYBOOK.md`.
+Scripts -> local Ollama builders for implementation -> Claude Sonnet only for
+planner/review through Claude Code. Paid API models are not part of the default
+route. Whoever assigns the task **trims context for the receiver**, especially
+Qwen which has only 32K. Full rules in `docs/AGENT_PLAYBOOK.md`.
 
 ## Release plan
 
@@ -175,11 +177,12 @@ Current release architecture is:
 `prompt -> intent router -> deterministic pattern library -> OperationGraph -> C# executor -> PartReport -> validation`
 
 Routing for the next build wave:
-- `sw-builder-a`: backend fast-path OperationGraph router and repair/quota rules.
-- `sw-builder-b`: C# executor, SWIR extractor, PartReport, package support.
+- `sw-builder-a`: local Ollama coding builder for backend fast-path router and primary implementation tasks.
+- `sw-builder-b`: local Ollama coding builder for secondary implementation, SWIR, tests, and reviewable patches.
+- Builders are auto-launch gated: dispatch the project planner first, then builders.
 - `md-maintainer`: release gates, dashboards, task-card hygiene, live-test reports.
-- `Claude`: schema, planner architecture, eval/fine-tune design, security review.
-- `Codex`: SolidWorks COM implementation, installer/package, live add-in testing.
+- `Claude Sonnet`: planner architecture and reviews through Claude Code only, not provider API.
+- Human/Codex review: SolidWorks COM details, installer/package, live add-in testing when local agents need review.
 
 ---
 

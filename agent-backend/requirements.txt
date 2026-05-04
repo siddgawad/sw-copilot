@@ -3,8 +3,9 @@ fastapi==0.111.0
 uvicorn[standard]==0.29.0
 python-multipart==0.0.9       # multipart/form-data support (PDF upload endpoint)
 
-# ── LLM provider ───────────────────────────────────────────────────────────────
-groq==0.9.0                   # Groq SDK — llama3-70b-8192 default for fast generation
+# ── LLM providers ──────────────────────────────────────────────────────────────
+groq==0.9.0                   # Groq SDK — fallback / legacy provider
+openai>=1.30.0                # OpenAI-compat SDK — used for NVIDIA NIM and Ollama
 
 # ── Vector store & embeddings ──────────────────────────────────────────────────
 chromadb==0.5.3
