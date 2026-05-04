@@ -167,6 +167,20 @@ Scripts -> Qwen (single-file mechanical) -> Codex medium (multi-file routine)
 assigns the task **trims context for the receiver**, especially Qwen which
 has only 32K. Full rules in `docs/AGENT_PLAYBOOK.md`.
 
+## Release plan
+
+End-to-end release ownership and milestones live in `docs/RELEASE_PLAN.md`.
+Current release architecture is:
+
+`prompt -> intent router -> deterministic pattern library -> OperationGraph -> C# executor -> PartReport -> validation`
+
+Routing for the next build wave:
+- `sw-builder-a`: backend fast-path OperationGraph router and repair/quota rules.
+- `sw-builder-b`: C# executor, SWIR extractor, PartReport, package support.
+- `md-maintainer`: release gates, dashboards, task-card hygiene, live-test reports.
+- `Claude`: schema, planner architecture, eval/fine-tune design, security review.
+- `Codex`: SolidWorks COM implementation, installer/package, live add-in testing.
+
 ---
 
 ## Security Model
@@ -192,15 +206,27 @@ off when done. Settled items move to `docs/CHANGELOG.md`.*
   operation fails with a specific COM error, paste it here and Claude
   will fix the Python planner pattern.
 
-- [ ] **[Codex -> Claude]** Beta6 live blockers from 2026-05-03:
-  fix backend/planner validation and generation patterns:
-  (1) bare `circle 30mm` means diameter, not radius;
-  (2) validation axis mapping for Front/Top plane extrudes is wrong;
-  (3) `50 wide 30 deep 20 tall` should validate as `x=50,y=30,z=20`;
-  (4) follow-up hole commands should not recreate prior solids unless required;
-  (5) automatic repair must stop if the regenerated graph is identical to the
-  failed graph; (6) Groq quota requires deterministic fast paths for primitive
-  CAD operations.
+- [x] **[Claude]** Beta6 LLM-side fixes (items 1, 3, 5 of the original
+  blocker list):
+  - (1) Compact system prompt now contains an explicit CIRCLE SIZE DEFAULT
+    rule (`Nmm circle` -> diameter -> radius_mm = N/2).
+  - (3) Compact system prompt now contains explicit AXIS MAPPING rules for
+    Top Plane and Front Plane requests covering wide/deep/tall/long.
+  - (5) Repair loop now detects structurally identical operation graphs
+    across two LLM attempts (`_normalize_operations`,
+    `_repair_loop_repeated`) and appends `_REPAIR_REPETITION_NOTE` to the
+    system prompt, forcing the LLM to either switch to a standard plane or
+    output noop. Standard plane names survive normalisation so a real fix
+    is not flagged as a loop.
+  - Files: `agent-backend/agents/macro_engineer.py`.
+  - Tests: `agent-backend/tests/test_macro_engineer_prompt.py` — 21 cases
+    pinning prompt contract + repair-loop heuristic. Full backend suite
+    `165 passed, 9 skipped`.
+  - Items (2) and (3-validator) already shipped by Codex this session.
+  - Item (4) `delete_feature` orphan-sketch cleanup is C# territory.
+  - Item (6) deterministic fast paths for primitives is broader scope —
+    Codex already started with `try_fast_path_clarification`. Not in this
+    commit.
 
 - [x] **[Codex -> Codex]** SW-B7-004 C# executor hole face resolver fixed:
   `OperationExecutor` now resolves non-plane `hole_wizard.face_of` targets by
@@ -222,6 +248,11 @@ off when done. Settled items move to `docs/CHANGELOG.md`.*
   Next step (whoever picks it up): install Aider, write QWEN-TASK-001
   (a small isolated task to validate end-to-end), and report on output
   quality.
+
+- [ ] **[Planner -> all]** Release ownership plan created in
+  `docs/RELEASE_PLAN.md`. Active task cards:
+  `SW-R1-PLAN`, `SW-R1-001`, `SW-R1-002`, `SW-R1-003`, `SW-R1-004`,
+  and `SW-R1-005`. Agents should take these before inventing new scope.
 
 ---
 

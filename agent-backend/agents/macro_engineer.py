@@ -274,6 +274,9 @@ Rules:
 11. Do not output overlapping holes. Center spacing must be at least the largest cutting diameter.
 12. If a critical input is truly missing, output noop as the only operation.
 13. Delete requests output delete_feature, not noop.
+14. CIRCLE SIZE DEFAULT: "a circle 30mm", "30mm circle", "circle of 30mm" all mean DIAMETER 30. Set radius_mm = 15. Only use radius_mm = N when the prompt explicitly says "radius Nmm" or "Nmm radius". Same for cylinders/shafts: "40mm shaft" = 40 diameter = radius 20.
+15. AXIS MAPPING for box requests on Top Plane: "wide" or "width" -> rectangle x-extent (x2-x1); "deep" or "depth" -> rectangle y-extent (y2-y1); "tall" or "height" -> extrude_boss depth_mm. For "50mm wide 30mm deep 20mm tall" build rectangle (-25,-15)->(25,15) and extrude depth_mm=20. Never swap depth and height.
+16. AXIS MAPPING on Front Plane: "wide" -> rectangle x-extent; "tall"/"height" -> rectangle y-extent; "deep"/"depth"/"long"/"length" -> extrude_boss depth_mm. For shafts: diameter sets the circle radius_mm; "long"/"length" sets extrude depth_mm.
 
 Output only valid JSON.
 """
@@ -283,6 +286,21 @@ _COMPACT_REPAIR_ADDENDUM = """
 REPAIR MODE - execution error detected.
 Read the latest ERROR in conversation history and output a corrected OperationGraph.
 Do not repeat the same failing operation. If the error shows impossible geometry or missing design intent, output noop with missing_inputs instead of guessing.
+
+Common executor errors and the only valid fixes:
+- "Could not select top face of '<id>'": replace face_of with "Top Plane" (always works for the active body's top), or if no flat top exists, output noop with missing_inputs asking for the target face by name/PCD.
+- "missing position": add at least one explicit positions entry to hole_wizard, or output noop asking for them.
+- "RULE VIOLATION: depth_mm must be positive": set depth_mm > 0 or use through_all=true.
+- "RULE VIOLATION: holes overlap": increase spacing or reduce hole count.
+"""
+
+
+_REPAIR_REPETITION_NOTE = """
+
+REPAIR ATTEMPT 2: your previous repair produced the SAME failing operations. Do not regenerate the same sketch + extrude + hole_wizard pattern. Either:
+  (a) replace face_of with the literal string "Top Plane", or
+  (b) output a single noop operation with missing_inputs explaining what design intent the user must clarify.
+Do not invent feature ids that do not exist in the prior history.
 """
 
 
@@ -312,6 +330,79 @@ def _has_execution_error(history: list[ConversationMessage] | None) -> bool:
         if msg.role == "assistant":
             return "ERROR:" in msg.content or "RULE VIOLATION" in msg.content
     return False
+
+
+_STANDARD_PLANES = {"Top Plane", "Front Plane", "Right Plane"}
+
+
+def _normalize_ref(value: object) -> object:
+    """
+    Treat invented op-id references as the same sentinel so two graphs that
+    only differ in their op IDs canonicalise identically. But preserve
+    standard SolidWorks plane names — they are a *real* fix, not a re-label.
+    """
+    if isinstance(value, str) and value in _STANDARD_PLANES:
+        return value
+    return "<ref>"
+
+
+def _normalize_operations(ops: list) -> list:
+    """
+    Strip ids and names so two operation lists that differ only in ID strings
+    or feature labels compare equal. Used to detect when the LLM is producing
+    the same broken graph repeatedly inside a repair loop. Standard plane
+    names ("Top Plane" etc.) survive normalisation because switching to a
+    standard plane is the canonical repair for a face_of failure.
+    """
+    if not isinstance(ops, list):
+        return []
+    out: list = []
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        copy = {k: v for k, v in op.items() if k not in {"id", "name"}}
+        for ref_key in ("profile_id", "face_of"):
+            if ref_key in copy:
+                copy[ref_key] = _normalize_ref(copy[ref_key])
+        if "feature_ids" in copy and isinstance(copy["feature_ids"], list):
+            copy["feature_ids"] = [_normalize_ref(v) for v in copy["feature_ids"]]
+        if "source_ids" in copy and isinstance(copy["source_ids"], list):
+            copy["source_ids"] = [_normalize_ref(v) for v in copy["source_ids"]]
+        out.append(copy)
+    return out
+
+
+def _operations_from_message(content: str) -> list | None:
+    """Best-effort extraction of an operations[] list from a stored assistant
+    message. Returns None when the message holds no parseable graph."""
+    start = content.find("{")
+    end = content.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        obj = json.loads(content[start:end + 1])
+    except (json.JSONDecodeError, ValueError):
+        return None
+    ops = obj.get("operations") if isinstance(obj, dict) else None
+    return ops if isinstance(ops, list) else None
+
+
+def _repair_loop_repeated(history: list[ConversationMessage] | None) -> bool:
+    """
+    True when the two most recent assistant turns produced structurally
+    identical operations — i.e. the previous repair attempt did not change the
+    graph and is about to fail the same way.
+    """
+    if not history:
+        return False
+    assistants = [m for m in history if m.role == "assistant"]
+    if len(assistants) < 2:
+        return False
+    prev_ops = _operations_from_message(assistants[-1].content)
+    earlier_ops = _operations_from_message(assistants[-2].content)
+    if not prev_ops or not earlier_ops:
+        return False
+    return _normalize_operations(prev_ops) == _normalize_operations(earlier_ops)
 
 
 def _trim_history(history: list[ConversationMessage] | None) -> list[ConversationMessage]:
@@ -439,10 +530,16 @@ def build_system_prompt(
     conversation_history: list[ConversationMessage] | None = None,
 ) -> str:
     """Return the system prompt, with the repair addendum appended when the
-    previous assistant turn contains an execution error."""
-    if _has_execution_error(conversation_history):
-        return _COMPACT_SYSTEM_PROMPT + _COMPACT_REPAIR_ADDENDUM
-    return _COMPACT_SYSTEM_PROMPT
+    previous assistant turn contains an execution error. When the LLM has
+    already attempted a repair that produced the same broken graph, escalate
+    to the repetition note so it is forced to either change face_of to a
+    standard plane or output noop."""
+    if not _has_execution_error(conversation_history):
+        return _COMPACT_SYSTEM_PROMPT
+    prompt = _COMPACT_SYSTEM_PROMPT + _COMPACT_REPAIR_ADDENDUM
+    if _repair_loop_repeated(conversation_history):
+        prompt += _REPAIR_REPETITION_NOTE
+    return prompt
 
 
 class MacroEngineerAgent:
