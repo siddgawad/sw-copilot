@@ -26,7 +26,7 @@ determinism at every layer after it.
 4. Pydantic validation (Python) + DTO validation (C#).
 5. `OperationExecutor.ValidateGraph()` — geometric rule engine refuses
    impossibilities before COM.
-6. `OperationExecutor.Execute()` — deterministic SW COM, 12 op types.
+6. `OperationExecutor.Execute()` — deterministic SW COM, 15 op types.
 7. `POST /validate` — backend compares requested graph to C# PartReport.
 
 ---
@@ -74,22 +74,28 @@ C:\projects\sw-copilot\
     ├── AddinCore/                  <- COM entry, GUID, ProgId
     ├── UI/TaskPaneHost.cs          <- chat panel, history cap, validation surface
     ├── Client/                     <- BackendClient, BackendRuntime, DTOs
-    └── Execution/OperationExecutor.cs  <- 12 op handlers, ~850 lines
+    └── Execution/OperationExecutor.cs  <- 15 op handlers, ~1100 lines
 ```
 
 ---
 
-## Current State (2026-05-04)
+## Current State (2026-05-15)
 
-**Backend:** `178 passed, 9 skipped`. `OperationGraph.schema_version == "0.2"`.
+**Backend:** `232 passed, 9 skipped`. `OperationGraph.schema_version == "0.2"`.
 RAG: 37 chunks in ChromaDB, keyword-gated, capped. Endpoints:
 `/generate /validate /ingest /health /version`. All token-gated except `/version`.
-Multi-provider LLM: NIM (primary when `LLM_PROVIDER=nim`) / Ollama (local fallback) / Groq (default).
-Automatic quota fallback: if primary hits 429, tries next provider in `LLM_FALLBACK_CHAIN`.
-Currently `.env` defaults to Groq primary + Ollama fallback.
+Multi-provider LLM: NIM / Ollama / Groq with automatic quota fallback.
 
-**C# Add-in:** Latest clean build is `Release-beta6`. Beta package:
-`artifacts\sw-copilot-beta6.zip`. 12 op types implemented.
+**15 operation types implemented (C# + Python):**
+Geometry: sketch, extrude_boss, extrude_cut, hole_wizard, fillet, chamfer,
+circular_pattern, linear_pattern, mirror, revolve, delete_feature, noop.
+Workflow: update_title_block, export_file, check_drawing.
+
+**Deterministic fast paths:** box_v0.py + cylinder_v0.py + base_plate_v0 + gear + shaft patterns.
+All wired into patterns/router.py before LLM call.
+
+**C# Add-in:** Latest clean build is `Release-beta7`. Beta package:
+`artifacts\sw-copilot-beta7.zip` (108 MB, SHA256: 7583C585CEA85485ACDB4F643CA2688A0BF4CE7A6434C011671A47C2F4435F4C).
 Repair-loop, rollback, validation surfacing all wired.
 
 **Local agent:** `qwen2.5-coder:7b` pulled via Ollama. See playbook for usage.
