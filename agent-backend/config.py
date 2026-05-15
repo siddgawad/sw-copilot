@@ -6,8 +6,8 @@ class Settings(BaseSettings):
     groq_api_key: str = ""
     groq_model: str = "llama-3.3-70b-versatile"
 
-    # ── NVIDIA NIM (free production tier; set LLM_PROVIDER=nim to activate) ─
-    # Get a free key at https://build.nvidia.com → "Get API Key"
+    # ── NVIDIA NIM (OpenAI-compatible; set LLM_PROVIDER=nim to activate) ──
+    # Hosted keys are issued through NVIDIA API Catalog / build.nvidia.com.
     nim_api_key: str = ""
     nim_base_url: str = "https://integrate.api.nvidia.com/v1"
     nim_model: str = "meta/llama-3.1-70b-instruct"

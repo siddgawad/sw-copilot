@@ -548,6 +548,12 @@ class _ProviderQuotaError(Exception):
     """Provider hit its rate/quota limit — caller should try the next provider."""
 
 
+def _safe_provider_text(text: str | None, limit: int = 500) -> str:
+    if not text:
+        return ""
+    return re.sub(r"\s+", " ", text).strip()[:limit]
+
+
 class MacroEngineerAgent:
     def __init__(self) -> None:
         self._provider = settings.llm_provider
@@ -590,7 +596,8 @@ class MacroEngineerAgent:
                         raise _ProviderQuotaError("Groq daily quota exhausted") from exc
                     time.sleep(_rate_limit_delay_seconds(exc))
                 else:
-                    raise
+                    detail = _safe_provider_text(getattr(exc.response, "text", ""))
+                    raise RuntimeError(f"Groq returned HTTP {exc.status_code}: {detail}") from exc
 
         return ""  # unreachable — satisfies type checker
 
@@ -617,6 +624,15 @@ class MacroEngineerAgent:
             raise _ProviderQuotaError("Provider quota exceeded") from exc
         except _openai.APIConnectionError as exc:
             raise _ProviderQuotaError("Provider unavailable (connection error)") from exc
+        except _openai.APITimeoutError as exc:
+            raise _ProviderQuotaError("Provider unavailable (timeout)") from exc
+        except _openai.APIStatusError as exc:
+            if exc.status_code == 429:
+                raise _ProviderQuotaError("Provider quota exceeded") from exc
+            detail = _safe_provider_text(getattr(exc.response, "text", ""))
+            raise RuntimeError(f"Provider returned HTTP {exc.status_code}: {detail}") from exc
+        except _openai.APIError as exc:
+            raise RuntimeError(f"Provider API error: {exc}") from exc
 
     def _call_provider(self, provider: str, messages: list[dict]) -> str:
         if provider == "groq":

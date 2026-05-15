@@ -1,5 +1,6 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Text;
 using Newtonsoft.Json;
@@ -22,6 +23,7 @@ namespace SwCopilotAddin.Execution
             new Dictionary<string, Feature>(StringComparer.OrdinalIgnoreCase);
 
         private readonly List<Feature> _lastCreatedFeatures = new List<Feature>();
+        private string? _activeSketchId;
 
         private static readonly HashSet<string> _systemTypes = new HashSet<string>
         {
@@ -33,6 +35,23 @@ namespace SwCopilotAddin.Execution
         public OperationExecutor(ISldWorks swApp)
         {
             _swApp = swApp;
+        }
+
+        private sealed class ExecutorOperationResult
+        {
+            [JsonProperty("operation_id")] public string OperationId { get; set; } = "";
+            [JsonProperty("operation_type")] public string OperationType { get; set; } = "";
+            [JsonProperty("status")] public string Status { get; set; } = "success";
+            [JsonProperty("created_feature")] public string? CreatedFeature { get; set; }
+            [JsonProperty("error_type")] public string? ErrorType { get; set; }
+            [JsonProperty("message")] public string? Message { get; set; }
+        }
+
+        private sealed class ExecutorRunResult
+        {
+            [JsonProperty("status")] public string Status { get; set; } = "success";
+            [JsonProperty("operations")] public List<ExecutorOperationResult> Operations { get; set; } =
+                new List<ExecutorOperationResult>();
         }
 
         public string Execute(OperationGraphDto graph)
@@ -64,12 +83,22 @@ namespace SwCopilotAddin.Execution
             // Pre-execution rule validation — catch geometric impossibilities before touching SW.
             string? ruleViolation = ValidateGraph(graph);
             if (ruleViolation != null)
-                return $"RULE VIOLATION — execution refused:\n{ruleViolation}";
+            {
+                var refused = new ExecutorRunResult
+                {
+                    Status = "failed",
+                    Operations = new List<ExecutorOperationResult>(),
+                };
+                return $"RULE VIOLATION - execution refused:\n{ruleViolation}\n" +
+                       "Runtime (executor_result): " + JsonConvert.SerializeObject(refused, Formatting.None);
+            }
 
             _features.Clear();
             _lastCreatedFeatures.Clear();
+            _activeSketchId = null;
 
             bool anyError = false;
+            var opResults = new List<ExecutorOperationResult>();
             foreach (OperationDto op in graph.Operations ?? System.Array.Empty<OperationDto>())
             {
                 string result;
@@ -83,19 +112,34 @@ namespace SwCopilotAddin.Execution
                 }
 
                 lines.Add($"[{op.Id}] {result}");
+                bool failed = result.StartsWith("ERROR", StringComparison.OrdinalIgnoreCase) ||
+                              result.StartsWith("Unknown operation", StringComparison.OrdinalIgnoreCase);
+                opResults.Add(BuildOperationResult(op, result, failed));
 
-                if (result.StartsWith("ERROR", StringComparison.OrdinalIgnoreCase))
+                if (failed)
                 {
                     anyError = true;
                     break;
                 }
             }
 
-            if (!anyError)
+            if (!anyError && _activeSketchId != null)
             {
-                doc.ForceRebuild3(false);
-                lines.Add("Runtime (report): " + ExtractPartReport(doc));
+                string closeResult = CloseActiveSketch(doc, _activeSketchId);
+                if (closeResult.StartsWith("ERROR", StringComparison.OrdinalIgnoreCase))
+                    anyError = true;
             }
+
+            if (!anyError)
+                doc.ForceRebuild3(false);
+
+            var runResult = new ExecutorRunResult
+            {
+                Status = anyError ? "failed" : "success",
+                Operations = opResults,
+            };
+            lines.Add("Runtime (executor_result): " + JsonConvert.SerializeObject(runResult, Formatting.None));
+            lines.Add("Runtime (report): " + ExtractPartReport(doc));
 
             return string.Join("\n", lines);
         }
@@ -252,10 +296,46 @@ namespace SwCopilotAddin.Execution
 
         // ── Dispatcher ────────────────────────────────────────────────────────
 
+        private ExecutorOperationResult BuildOperationResult(OperationDto op, string message, bool failed)
+        {
+            string? createdFeature = null;
+            if (!failed && _features.TryGetValue(op.Id, out Feature feature))
+            {
+                try { createdFeature = feature.Name; } catch { }
+            }
+
+            return new ExecutorOperationResult
+            {
+                OperationId = op.Id,
+                OperationType = op.Type,
+                Status = failed ? "failed" : "success",
+                CreatedFeature = createdFeature,
+                ErrorType = failed ? ClassifyError(message) : null,
+                Message = string.IsNullOrWhiteSpace(message) ? null : message,
+            };
+        }
+
+        private static string ClassifyError(string message)
+        {
+            if (message.IndexOf("sketch", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "SKETCH_PROFILE_INVALID";
+            if (message.IndexOf("select", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "SELECTION_FAILED";
+            if (message.IndexOf("cut", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "CUT_FAILED";
+            if (message.IndexOf("extrude", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "EXTRUDE_FAILED";
+            return "EXECUTION_FAILED";
+        }
+
         private string Dispatch(IModelDoc2 doc, OperationDto op)
         {
             switch ((op.Type ?? "").Trim().ToLowerInvariant())
             {
+                case "create_part":       return ExecCreatePart(doc);
+                case "create_sketch":     return ExecCreateSketch(doc, op);
+                case "add_center_rectangle": return ExecAddCenterRectangle(doc, op);
+                case "add_circles":       return ExecAddCircles(doc, op);
                 case "sketch":            return ExecSketch(doc, op);
                 case "extrude_boss":      return ExecExtrudeBoss(doc, op);
                 case "extrude_cut":       return ExecExtrudeCut(doc, op);
@@ -267,12 +347,72 @@ namespace SwCopilotAddin.Execution
                 case "mirror":            return ExecMirror(doc, op);
                 case "revolve":           return ExecRevolve(doc, op);
                 case "delete_feature":    return ExecDeleteFeature(doc, op);
+                case "rebuild":           doc.ForceRebuild3(false); return "Rebuild";
                 case "noop":              return op.Message ?? "No operation.";
                 default:                  return $"Unknown operation type: {op.Type}";
             }
         }
 
         // ── sketch ────────────────────────────────────────────────────────────
+
+        private string ExecCreatePart(IModelDoc2 doc)
+        {
+            return "Part document ready";
+        }
+
+        private string ExecCreateSketch(IModelDoc2 doc, OperationDto op)
+        {
+            string sketchId = op.SketchId ?? op.Id;
+            if (_activeSketchId != null)
+            {
+                string close = CloseActiveSketch(doc, _activeSketchId);
+                if (close.StartsWith("ERROR", StringComparison.OrdinalIgnoreCase))
+                    return close;
+            }
+
+            string plane = op.Plane ?? "Top Plane";
+            if (!SelectPlaneOrFace(doc, plane))
+                return $"ERROR: Could not select '{plane}'";
+
+            doc.SketchManager.InsertSketch(true);
+            _activeSketchId = sketchId;
+            return $"Create sketch '{sketchId}' on {plane}";
+        }
+
+        private string ExecAddCenterRectangle(IModelDoc2 doc, OperationDto op)
+        {
+            if (!IsActiveSketch(op.SketchId))
+                return $"ERROR: add_center_rectangle requires active sketch '{op.SketchId}'";
+            if ((op.Length ?? 0) <= 0 || (op.Width ?? 0) <= 0)
+                return "ERROR: add_center_rectangle length and width must be positive";
+
+            double cx = op.Center.Length > 0 ? op.Center[0] : 0.0;
+            double cy = op.Center.Length > 1 ? op.Center[1] : 0.0;
+            double halfLength = (op.Length ?? 0) / 2.0;
+            double halfWidth = (op.Width ?? 0) / 2.0;
+            doc.SketchManager.CreateCornerRectangle(
+                Mm(cx - halfLength), Mm(cy - halfWidth), 0,
+                Mm(cx + halfLength), Mm(cy + halfWidth), 0);
+            return $"Center rectangle {op.Length:0.#} x {op.Width:0.#} mm";
+        }
+
+        private string ExecAddCircles(IModelDoc2 doc, OperationDto op)
+        {
+            if (!IsActiveSketch(op.SketchId))
+                return $"ERROR: add_circles requires active sketch '{op.SketchId}'";
+            if (op.Circles == null || op.Circles.Length == 0)
+                return "ERROR: add_circles requires at least one circle";
+
+            foreach (CirclePrimitiveDto circle in op.Circles)
+            {
+                if ((circle.Diameter ?? 0) <= 0)
+                    return "ERROR: circle diameter must be positive";
+                double cx = circle.Center.Length > 0 ? circle.Center[0] : 0.0;
+                double cy = circle.Center.Length > 1 ? circle.Center[1] : 0.0;
+                doc.SketchManager.CreateCircleByRadius(Mm(cx), Mm(cy), 0, Mm(circle.Diameter / 2.0));
+            }
+            return $"Added {op.Circles.Length} circle(s)";
+        }
 
         private string ExecSketch(IModelDoc2 doc, OperationDto op)
         {
@@ -326,13 +466,21 @@ namespace SwCopilotAddin.Execution
 
         private string ExecExtrudeBoss(IModelDoc2 doc, OperationDto op)
         {
-            if (string.IsNullOrEmpty(op.ProfileId))
+            string? profileId = op.ProfileId ?? op.SketchId;
+            if (string.IsNullOrEmpty(profileId))
                 return "ERROR: extrude_boss requires profile_id";
 
-            double depth = Mm(op.DepthMm);
+            if (IsActiveSketch(profileId))
+            {
+                string close = CloseActiveSketch(doc, profileId!);
+                if (close.StartsWith("ERROR", StringComparison.OrdinalIgnoreCase))
+                    return close;
+            }
+
+            double depth = Mm(op.DepthMm ?? op.Depth);
             if (depth <= 0) return "ERROR: extrude_boss depth_mm must be positive";
 
-            SelectRegisteredFeature(doc, op.ProfileId!);
+            SelectRegisteredFeature(doc, profileId!);
 
             Feature? feature = doc.FeatureManager.FeatureExtrusion2(
                 true, false, false,
@@ -346,25 +494,36 @@ namespace SwCopilotAddin.Execution
 
             if (feature == null) return "ERROR: Extrude Boss failed — check sketch is closed";
 
-            if (!string.IsNullOrWhiteSpace(op.Name))
-                try { feature.Name = op.Name; } catch { }
+            string? featureName = op.FeatureName ?? op.Name;
+            if (!string.IsNullOrWhiteSpace(featureName))
+                try { feature.Name = featureName; } catch { }
 
             RegisterFeature(op.Id, feature);
             doc.ForceRebuild3(false);
-            return $"Extrude Boss {op.DepthMm:0.#} mm";
+            return $"Extrude Boss {(op.DepthMm ?? op.Depth):0.#} mm";
         }
 
         // ── extrude_cut ───────────────────────────────────────────────────────
 
         private string ExecExtrudeCut(IModelDoc2 doc, OperationDto op)
         {
-            if (string.IsNullOrEmpty(op.ProfileId))
+            string? profileId = op.ProfileId ?? op.SketchId;
+            if (string.IsNullOrEmpty(profileId))
                 return "ERROR: extrude_cut requires profile_id";
 
-            SelectRegisteredFeature(doc, op.ProfileId!);
+            if (IsActiveSketch(profileId))
+            {
+                string close = CloseActiveSketch(doc, profileId!);
+                if (close.StartsWith("ERROR", StringComparison.OrdinalIgnoreCase))
+                    return close;
+            }
 
-            bool thruAll = op.ThroughAll || (op.DepthMm ?? 0) <= 0;
-            double depth = Mm(op.DepthMm);
+            SelectRegisteredFeature(doc, profileId!);
+
+            bool thruAll = op.ThroughAll ||
+                            string.Equals(op.CutType, "through_all", StringComparison.OrdinalIgnoreCase) ||
+                            ((op.DepthMm ?? op.Depth ?? 0) <= 0);
+            double depth = Mm(op.DepthMm ?? op.Depth);
             int endCond = thruAll
                 ? (int)swEndConditions_e.swEndCondThroughAll
                 : (int)swEndConditions_e.swEndCondBlind;
@@ -382,12 +541,13 @@ namespace SwCopilotAddin.Execution
 
             if (feature == null) return "ERROR: Extrude Cut failed";
 
-            if (!string.IsNullOrWhiteSpace(op.Name))
-                try { feature.Name = op.Name; } catch { }
+            string? featureName = op.FeatureName ?? op.Name;
+            if (!string.IsNullOrWhiteSpace(featureName))
+                try { feature.Name = featureName; } catch { }
 
             RegisterFeature(op.Id, feature);
             doc.ForceRebuild3(false);
-            return thruAll ? "Extrude Cut through all" : $"Extrude Cut {op.DepthMm:0.#} mm";
+            return thruAll ? "Extrude Cut through all" : $"Extrude Cut {(op.DepthMm ?? op.Depth):0.#} mm";
         }
 
         // ── fillet ────────────────────────────────────────────────────────────
@@ -412,7 +572,7 @@ namespace SwCopilotAddin.Execution
                 new object[] { },        // SetBackDistances
                 new object[] { });       // PointRadiusArray
 
-            if (fillet == null) return "ERROR: Fillet failed — edges may not support this radius";
+            if (fillet == null) return "ERROR: Fillet failed — try specifying only external edges or a smaller radius";
 
             RegisterFeature(op.Id, fillet);
             return $"Fillet R={op.RadiusMm:0.#} mm";
@@ -756,6 +916,17 @@ namespace SwCopilotAddin.Execution
                 return doc.Extension.SelectByID2(plane, "PLANE", 0, 0, 0, false, 0, null, 0);
             }
 
+            if (plane.StartsWith("top_face_of:", StringComparison.OrdinalIgnoreCase))
+            {
+                string featureName = plane.Substring("top_face_of:".Length).Trim();
+                if (_features.TryGetValue(featureName, out Feature namedFeature))
+                    return SelectFaceOfFeature(doc, namedFeature, topFace: true);
+                Feature? docFeature = FindFeatureByName(doc, featureName);
+                if (docFeature != null)
+                    return SelectFaceOfFeature(doc, docFeature, topFace: true);
+                return SelectTopFaceOfBody(doc);
+            }
+
             // "<feature_id> top" or "<feature_id> bottom"
             string lower = plane.ToLowerInvariant();
             bool wantTop = !lower.Contains("bottom");
@@ -968,11 +1139,45 @@ namespace SwCopilotAddin.Execution
             feat.Select2(false, 0);
         }
 
+        private bool IsActiveSketch(string? sketchId)
+        {
+            return _activeSketchId != null &&
+                   string.Equals(_activeSketchId, sketchId, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private string CloseActiveSketch(IModelDoc2 doc, string sketchId)
+        {
+            try
+            {
+                doc.SketchManager.InsertSketch(true);
+                Feature? sketchFeat = FindLastFeatureOfType(doc, "ProfileFeature", "3DProfileFeature");
+                if (sketchFeat != null)
+                {
+                    try { sketchFeat.Name = sketchId; } catch { }
+                    RegisterFeature(sketchId, sketchFeat);
+                }
+                _activeSketchId = null;
+                return $"Closed sketch '{sketchId}'";
+            }
+            catch (Exception ex)
+            {
+                return "ERROR: Could not close active sketch: " + ex.Message;
+            }
+        }
+
         private void RegisterFeature(string? opId, Feature feature)
         {
             string opKey = opId?.Trim() ?? string.Empty;
             if (opKey.Length > 0)
                 _features[opKey] = feature;
+
+            try
+            {
+                string featureName = feature.Name;
+                if (!string.IsNullOrWhiteSpace(featureName))
+                    _features[featureName] = feature;
+            }
+            catch { }
 
             _lastCreatedFeatures.Add(feature);
         }
@@ -983,50 +1188,61 @@ namespace SwCopilotAddin.Execution
         /// </summary>
         private bool SelectEdgesForFillet(IModelDoc2 doc, string[] featureIds)
         {
-            List<Feature> targets;
+            doc.ClearSelection2(true);
+            bool anySelected = false;
+
             if (featureIds == null || featureIds.Length == 0)
             {
-                targets = CollectUserFeatures(doc)
-                    .Where(f => { string t = f.GetTypeName2() ?? ""; return t == "Boss" || t == "Cut"; })
-                    .ToList();
-
-                if (targets.Count == 0)
-                    targets = CollectUserFeatures(doc);
-            }
-            else
-            {
-                targets = new List<Feature>();
-                foreach (string fid in featureIds)
+                // "all edges" → walk solid bodies to get unique edge set
+                IPartDoc? part = doc as IPartDoc;
+                object[]? bodies = part?.GetBodies2(
+                    (int)swBodyType_e.swSolidBody, true) as object[];
+                if (bodies == null) return false;
+                var seen = new HashSet<IntPtr>();
+                foreach (object bodyObj in bodies)
                 {
-                    if (_features.TryGetValue(fid, out Feature feat))
-                        targets.Add(feat);
-                }
-            }
-
-            bool anySelected = false;
-            foreach (Feature feat in targets)
-            {
-                object[]? faceArr = feat.GetFaces() as object[];
-                if (faceArr == null) continue;
-
-                foreach (object faceObj in faceArr)
-                {
-                    if (!(faceObj is Face2 face)) continue;
-                    object[]? edgeArr = face.GetEdges() as object[];
-                    if (edgeArr == null) continue;
-
-                    foreach (object edgeObj in edgeArr)
+                    IBody2? body = bodyObj as IBody2;
+                    if (body == null) continue;
+                    object[]? edges = body.GetEdges() as object[];
+                    if (edges == null) continue;
+                    foreach (object edgeObj in edges)
                     {
-                        try
-                        {
+                        // Use COM identity pointer for deduplication
+                        IntPtr ptr = System.Runtime.InteropServices.Marshal
+                            .GetIUnknownForObject(edgeObj);
+                        System.Runtime.InteropServices.Marshal.Release(ptr);
+                        if (!seen.Add(ptr)) continue;
+                        try {
                             ((IEntity)edgeObj).Select4(anySelected, null);
                             anySelected = true;
-                        }
-                        catch { }
+                        } catch { }
                     }
                 }
             }
-
+            else
+            {
+                // Named features: walk their faces (existing logic)
+                foreach (string fid in featureIds)
+                {
+                    if (!_features.TryGetValue(fid, out Feature feat)) continue;
+                    object[]? faceArr = feat.GetFaces() as object[];
+                    if (faceArr == null) continue;
+                    foreach (object faceObj in faceArr)
+                    {
+                        Face2? face = faceObj as Face2;
+                        if (face == null) continue;
+                        object[]? edgeArr = face.GetEdges() as object[];
+                        if (edgeArr == null) continue;
+                        foreach (object edgeObj in edgeArr)
+                        {
+                            try {
+                                ((IEntity)edgeObj).Select4(anySelected, null);
+                                anySelected = true;
+                            } catch { }
+                        }
+                    }
+                }
+            }
             return anySelected;
         }
 
@@ -1056,6 +1272,18 @@ namespace SwCopilotAddin.Execution
             return last;
         }
 
+        private static Feature? FindFeatureByName(IModelDoc2 doc, string name)
+        {
+            Feature? f = (Feature?)doc.FirstFeature();
+            while (f != null)
+            {
+                if (string.Equals(f.Name ?? "", name, StringComparison.OrdinalIgnoreCase))
+                    return f;
+                f = (Feature?)f.GetNextFeature();
+            }
+            return null;
+        }
+
         /// <summary>Converts nullable mm value to metres. Null → 0.</summary>
         /// <summary>Extracts a compact JSON report of the current part after execution.</summary>
         public static string ExtractPartReport(IModelDoc2 doc)
@@ -1068,21 +1296,26 @@ namespace SwCopilotAddin.Execution
 
                 double[]? box = GetCombinedBodyBox(bodies);
                 var features = CollectFeatureReports(doc);
+                var bbox = box == null
+                    ? null
+                    : new
+                    {
+                        x_mm = Math.Round((box[3] - box[0]) * 1000.0, 3),
+                        y_mm = Math.Round((box[4] - box[1]) * 1000.0, 3),
+                        z_mm = Math.Round((box[5] - box[2]) * 1000.0, 3),
+                    };
 
                 var report = new
                 {
+                    document_type = "part",
+                    rebuild_status = "success",
                     body_count = bodies.Length,
-                    bounding_box = box == null
-                        ? null
-                        : new
-                        {
-                            x_mm = Math.Round((box[3] - box[0]) * 1000.0, 3),
-                            y_mm = Math.Round((box[4] - box[1]) * 1000.0, 3),
-                            z_mm = Math.Round((box[5] - box[2]) * 1000.0, 3),
-                        },
+                    bounding_box = bbox,
+                    bounding_box_mm = bbox,
                     mass_g = Math.Round(EstimateMassGrams(doc, bodies), 3),
                     feature_count = features.Count,
                     features,
+                    sketches = CollectSketchReports(doc),
                 };
 
                 return JsonConvert.SerializeObject(report, Formatting.None);
@@ -1169,6 +1402,48 @@ namespace SwCopilotAddin.Execution
             return features;
         }
 
+        private static List<object> CollectSketchReports(IModelDoc2 doc)
+        {
+            var sketches = new List<object>();
+            Feature? f = (Feature?)doc.FirstFeature();
+            while (f != null)
+            {
+                string type = f.GetTypeName2() ?? string.Empty;
+                if (type == "ProfileFeature" || type == "3DProfileFeature")
+                {
+                    sketches.Add(new
+                    {
+                        name = f.Name ?? string.Empty,
+                        entity_count = CountSketchEntities(f),
+                    });
+                }
+                f = (Feature?)f.GetNextFeature();
+            }
+
+            return sketches;
+        }
+
+        private static int CountSketchEntities(Feature feature)
+        {
+            try
+            {
+                Sketch? sketch = feature.GetSpecificFeature2() as Sketch;
+                object[]? segments = sketch?.GetSketchSegments() as object[];
+                return segments?.Length ?? -1;
+            }
+            catch
+            {
+                return -1;
+            }
+        }
+
+        public static string ExtractPartCorpus(string folderPath, string outputPath = null)
+        {
+            // This would be the implementation for extracting SolidWorks feature corpus
+            // For now, returning a placeholder
+            return "Corpus extraction not yet implemented";
+        }
+
         private static bool IsFeatureSuppressed(Feature feature)
         {
             try
@@ -1180,6 +1455,7 @@ namespace SwCopilotAddin.Execution
                 return false;
             }
         }
+
 
         private static double[]? ToDoubleArray(object? value)
         {
@@ -1217,3 +1493,4 @@ namespace SwCopilotAddin.Execution
         }
     }
 }
+

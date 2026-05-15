@@ -1,6 +1,6 @@
-# SW Copilot — Multi-Agent Playbook
+﻿# SW Copilot â€” Multi-Agent Playbook
 
-How Claude, Codex, and the local Qwen agent split work without stepping on
+How Claude Code planners and local Ollama builders split work without stepping on
 each other or burning context. **Read once, then refer back when routing or
 preparing a task card for the local agent.**
 
@@ -10,34 +10,32 @@ preparing a task card for the local agent.**
 
 | Agent | Where it runs | Context | Best at | Cost |
 |---|---|---|---|---|
-| **Claude (Opus 4.7)** | claude.com | 1M tokens | Architecture, schema design, multi-file reasoning, security review | $$$ |
-| **Codex (GPT-5-Codex)** | OpenAI | ~200K | Multi-file C# work, COM integration, packaging, debugging | $$ |
-| **Qwen2.5-Coder-7B** | local Ollama | 32K | Boilerplate, single-file refactors, tests, doc updates, log summaries | free |
+| **Claude Sonnet** | Claude Code, human-launched | large | Planning, architecture review, task breakdown | subscription/no project API |
+| **Qwen2.5-Coder-7B** | local Ollama | 32K | Coding builders, tests, docs, focused implementation | free/local |
 | **Llama 3.2 (small)** | local Ollama | 128K | Log compression, classification, "is this risky?" pre-checks | free |
 
-The rule: **paid intelligence used only when marginal value is high.**
-Local agent picks up cheap work so paid tokens last for hard problems.
+The rule: **build agents are local/free by default.** Claude Sonnet may plan
+through Claude Code, but project build work should not use paid provider APIs
+unless the human explicitly approves a single task.
 
 ---
 
 ## Routing decision flow
 
 1. **Can a script do it?** (`pytest`, `dotnet build`, `git status`,
-   `ollama list`) → no LLM at all.
-2. **Is it isolated, single-file, mechanical?** → Qwen. Examples: write a
-   regression test against an existing function, update a docstring, rename
-   a variable across one file, summarise a log.
-3. **Is it multi-file but routine?** → Codex medium. Examples: add a new
-   operation type that touches schema + executor + tests.
-4. **Is it cross-cutting, schema-changing, or new abstraction?** → Claude
-   (Sonnet for review, Opus only for high-stakes final review).
-5. **Did Qwen fail twice?** → escalate to Codex.
-6. **Did Codex and Claude disagree?** → final-opus-reviewer.
+   `ollama list`) -> no LLM at all.
+2. **Is it isolated, single-file, mechanical?** -> Qwen/Ollama. Examples:
+   write a regression test, update docs, summarize logs, or make a small parser.
+3. **Is it multi-file but routine?** -> local Ollama builder with a tight
+   task card and mandatory human review.
+4. **Is it cross-cutting, schema-changing, or new abstraction?** -> Claude
+   Sonnet planner/reviewer through Claude Code, not provider API.
+5. **Did local builders fail twice?** -> human decides whether to rewrite the
+   task card, split the task, or manually approve a paid model.
 
-**Never** Claude Opus first. Opus is the judge of last resort, not a worker.
+**Never** use paid API models by default. They require explicit human approval.
 
 ---
-
 ## Local-agent task card contract
 
 Qwen has 32K context. It cannot read CLAUDE.md, the whole repo, and
@@ -50,14 +48,14 @@ context**. Use this format:
 ## Goal
 <one sentence>
 
-## Files to read (paths only — Qwen will read them)
+## Files to read (paths only â€” Qwen will read them)
 - agent-backend/standards/dimension_resolver.py
 
 ## Files to modify
 - agent-backend/standards/dimension_resolver.py
 
 ## Relevant excerpt (if a target file is >500 lines)
-<paste the specific function or block — saves Qwen from reading 850-line files>
+<paste the specific function or block â€” saves Qwen from reading 850-line files>
 
 ## Acceptance test (must be runnable)
 ```powershell
@@ -77,7 +75,7 @@ cd C:\projects\sw-copilot\agent-backend
 ```
 
 **One-shot, not multi-turn.** Qwen returns a diff and a test result. If it
-fails, the assigning agent trims further or escalates — don't try to fix
+fails, the assigning agent trims further or escalates â€” don't try to fix
 Qwen by chatting.
 
 ---
@@ -119,23 +117,24 @@ These rules keep the always-loaded surface small as the project grows.
 2. **`docs/CHANGELOG.md` is the archive.** Settled L/C tasks live here.
    Agents read on demand only. Never reference completed task numbers
    from the live handoff queue.
-3. **`docs/SOLIDWORKS_API_REFERENCE.md` is reference data.** Only Codex,
-   only when touching the executor.
+3. **`docs/SOLIDWORKS_API_REFERENCE.md` is reference data.** Read it only
+   when touching the executor or COM-facing code.
 4. **`docs/AGENT_PLAYBOOK.md` (this file) is the routing manual.** Read
    once at session start; don't keep it in context.
 5. **Don't paste full diffs in CLAUDE.md.** Reference commit hashes; the
    next agent runs `git show <hash>`.
 6. **Live SolidWorks work evicts the local model from VRAM.** Don't
-   invoke Qwen during live add-in testing — only between iterations.
+   invoke Qwen during live add-in testing â€” only between iterations.
 
 ---
 
 ## Hardware notes (this machine)
 
-- RTX 4060 (8GB VRAM) → 7B Q4 ceiling
-- 32GB system RAM → plenty for Ollama + Python venv + dotnet builds
-- i9 13th gen → CPU not a bottleneck for any local agent task
+- RTX 4060 (8GB VRAM) â†’ 7B Q4 ceiling
+- 32GB system RAM â†’ plenty for Ollama + Python venv + dotnet builds
+- i9 13th gen â†’ CPU not a bottleneck for any local agent task
 
 If/when you upgrade GPU: `qwen2.5-coder:14b` Q4 (~8.5GB) becomes viable on
 12GB+ VRAM. Above 24GB, `deepseek-coder-v2-lite` (16B MoE) becomes viable
 and is genuinely competitive with Codex Mini for code work.
+

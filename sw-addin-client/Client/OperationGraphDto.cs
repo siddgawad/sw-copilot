@@ -5,6 +5,8 @@ namespace SwCopilotAddin.Client
     public sealed class OperationGraphDto
     {
         [JsonProperty("schema_version")] public string?        SchemaVersion { get; set; }
+        [JsonProperty("trace_id")]       public string?        TraceId       { get; set; }
+        [JsonProperty("part_family")]    public string?        PartFamily    { get; set; }
         [JsonProperty("part_name")]      public string?        PartName      { get; set; }
         [JsonProperty("operations")]     public OperationDto[] Operations    { get; set; } = System.Array.Empty<OperationDto>();
         [JsonProperty("missing_inputs")] public string[]       MissingInputs { get; set; } = System.Array.Empty<string>();
@@ -22,14 +24,25 @@ namespace SwCopilotAddin.Client
 
         // ── sketch ────────────────────────────────────────────────────────────
         [JsonProperty("plane")]      public string?           Plane      { get; set; }
+        [JsonProperty("sketch_id")]  public string?           SketchId   { get; set; }
         [JsonProperty("entities")]   public SketchEntityDto[] Entities   { get; set; } = System.Array.Empty<SketchEntityDto>();
         [JsonProperty("named_dims")] public NamedDimDto[]     NamedDims  { get; set; } = System.Array.Empty<NamedDimDto>();
+
+        // v0.2 coordinate-first sketch primitives
+        [JsonProperty("center")]  public double[]             Center     { get; set; } = System.Array.Empty<double>();
+        [JsonProperty("length")]  public double?              Length     { get; set; }
+        [JsonProperty("width")]   public double?              Width      { get; set; }
+        [JsonProperty("circles")] public CirclePrimitiveDto[] Circles    { get; set; } = System.Array.Empty<CirclePrimitiveDto>();
 
         // ── extrude_boss / extrude_cut / revolve ──────────────────────────────
         [JsonProperty("profile_id")]  public string? ProfileId  { get; set; }
         [JsonProperty("depth_mm")]    public double? DepthMm    { get; set; }
+        [JsonProperty("depth")]       public double? Depth      { get; set; }
         [JsonProperty("through_all")] public bool    ThroughAll { get; set; }
         [JsonProperty("name")]        public string? Name       { get; set; }
+        [JsonProperty("feature_name")] public string? FeatureName { get; set; }
+        [JsonProperty("cut_type")]    public string? CutType    { get; set; }
+        [JsonProperty("direction")]   public string? Direction  { get; set; }
         [JsonProperty("angle_deg")]   public double? AngleDeg   { get; set; }
 
         // ── fillet / chamfer ──────────────────────────────────────────────────
@@ -86,5 +99,11 @@ namespace SwCopilotAddin.Client
     {
         [JsonProperty("x_mm")] public double XMm { get; set; }
         [JsonProperty("y_mm")] public double YMm { get; set; }
+    }
+
+    public sealed class CirclePrimitiveDto
+    {
+        [JsonProperty("center")]   public double[] Center   { get; set; } = System.Array.Empty<double>();
+        [JsonProperty("diameter")] public double?  Diameter { get; set; }
     }
 }

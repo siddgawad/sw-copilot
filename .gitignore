@@ -29,3 +29,14 @@ packages/
 Thumbs.db
 *.log
 artifacts/
+runs/
+
+# ── Local tooling / agent scratch files ──────────────────────────────────────
+.venv-litellm/
+*.bak
+litellm-nvidia.yaml
+opencode.json
+
+# ── Files accidentally rooted here from other projects ───────────────────────
+CAI-Factory*/
+C：AI-Factory*

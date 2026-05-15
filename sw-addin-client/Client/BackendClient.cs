@@ -112,15 +112,20 @@ namespace SwCopilotAddin.Client
         public async Task<ValidationResponse> ValidateOperationAsync(
             OperationGraphDto operationGraph,
             string partReportJson,
+            string? executorResultJson = null,
             double toleranceMm = 1.0)
         {
             await BackendRuntime.EnsureReadyAsync(_http, BaseUrl);
 
             JObject partReport = JObject.Parse(partReportJson);
+            JObject? executorResult = string.IsNullOrWhiteSpace(executorResultJson)
+                ? null
+                : JObject.Parse(executorResultJson!);
             var payload = new
             {
                 operation_graph = operationGraph,
                 part_report = partReport,
+                executor_result = executorResult,
                 tolerance_mm = toleranceMm,
             };
 

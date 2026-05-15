@@ -1,0 +1,37 @@
+name: C# Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: dotnet build (net48, x64)
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.x"
+
+      - name: Restore packages
+        working-directory: sw-addin-client
+        run: dotnet restore SwCopilotAddin.csproj
+        shell: pwsh
+
+      - name: Build add-in
+        working-directory: sw-addin-client
+        run: |
+          dotnet build SwCopilotAddin.csproj `
+            -c Release `
+            -p:Platform=x64 `
+            -p:RegisterForComInterop=false `
+            "-p:SolidWorksPath=${{ github.workspace }}\sw-addin-client\lib\solidworks" `
+            -p:TreatWarningsAsErrors=false `
+            --no-restore
+        shell: pwsh

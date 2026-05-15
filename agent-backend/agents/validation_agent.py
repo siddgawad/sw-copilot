@@ -19,9 +19,12 @@ The bounding-box derivation only handles axis-aligned base extrudes from
 from __future__ import annotations
 
 from models.schemas import (
+    AddCenterRectangleOp,
+    AddCirclesOp,
     BoundingBox,
     CircleEntity,
     Discrepancy,
+    ExecutorRunResult,
     ExtrudeBossOp,
     OperationGraph,
     PartReport,
@@ -58,9 +61,10 @@ def _expected_base_bbox(graph: OperationGraph) -> BoundingBox | None:
         return None
     base_extrude = base_extrudes[0]
 
-    sketch = sketches.get(base_extrude.profile_id)
+    profile_id = base_extrude.profile_id or base_extrude.sketch_id
+    sketch = sketches.get(profile_id or "")
     if sketch is None or sketch.plane not in _PLANE_TO_EXTRUDE_AXIS:
-        return None
+        return _expected_v02_base_bbox(graph, base_extrude)
     if not sketch.entities:
         return None
 
@@ -75,13 +79,32 @@ def _expected_base_bbox(graph: OperationGraph) -> BoundingBox | None:
     else:
         return None
 
-    depth = base_extrude.depth_mm
+    depth = base_extrude.depth_mm or base_extrude.depth or 0.0
     axis  = _PLANE_TO_EXTRUDE_AXIS[sketch.plane]
     if axis == "z":
         return BoundingBox(x_mm=u, y_mm=v, z_mm=depth)
     if axis == "y":
         return BoundingBox(x_mm=u, y_mm=depth, z_mm=v)
     return BoundingBox(x_mm=depth, y_mm=u, z_mm=v)  # axis == "x"
+
+
+def _expected_v02_base_bbox(
+    graph: OperationGraph,
+    base_extrude: ExtrudeBossOp,
+) -> BoundingBox | None:
+    profile_id = base_extrude.profile_id or base_extrude.sketch_id
+    if not profile_id:
+        return None
+
+    rects = [
+        op for op in graph.operations
+        if isinstance(op, AddCenterRectangleOp) and op.sketch_id == profile_id
+    ]
+    if len(rects) != 1:
+        return None
+
+    depth = base_extrude.depth_mm or base_extrude.depth or 0.0
+    return BoundingBox(x_mm=rects[0].length, y_mm=rects[0].width, z_mm=depth)
 
 
 def _expected_feature_count_lower_bound(graph: OperationGraph) -> int:
@@ -130,6 +153,7 @@ def validate(
     graph: OperationGraph,
     report: PartReport,
     tolerance_mm: float = 1.0,
+    executor_result: ExecutorRunResult | None = None,
 ) -> ValidationReport:
     discrepancies: list[Discrepancy] = []
     expected_summary: dict = {}
@@ -139,6 +163,30 @@ def validate(
     }
     if report.bounding_box is not None:
         actual_summary["bounding_box"] = report.bounding_box.model_dump()
+    if report.bounding_box is None and report.bounding_box_mm is not None:
+        report.bounding_box = report.bounding_box_mm
+        actual_summary["bounding_box"] = report.bounding_box.model_dump()
+
+    # 0. Executor and rebuild status.
+    if executor_result is not None:
+        failed_ops = [op for op in executor_result.operations if op.status == "failed"]
+        for failed in failed_ops:
+            discrepancies.append(Discrepancy(
+                category="failed_operation",
+                severity="error",
+                expected="all operations successful",
+                actual=f"{failed.operation_id}:{failed.operation_type}",
+                message=failed.message or failed.error_type or "Operation failed.",
+            ))
+
+    if report.rebuild_status and report.rebuild_status != "success":
+        discrepancies.append(Discrepancy(
+            category="rebuild_status",
+            severity="error",
+            expected="success",
+            actual=report.rebuild_status,
+            message="SolidWorks rebuild did not complete successfully.",
+        ))
 
     # 1. Bounding-box check (only when we can derive expectation safely).
     expected_bbox = _expected_base_bbox(graph)
@@ -215,6 +263,8 @@ def validate(
                 message=f"Feature '{feature.name}' is suppressed — likely a rebuild error.",
             ))
 
+    _validate_base_plate_v0(graph, report, discrepancies)
+
     has_errors   = any(d.severity == "error"   for d in discrepancies)
     has_warnings = any(d.severity == "warning" for d in discrepancies)
 
@@ -225,3 +275,58 @@ def validate(
         expected_summary=expected_summary,
         actual_summary=actual_summary,
     )
+
+
+def _validate_base_plate_v0(
+    graph: OperationGraph,
+    report: PartReport,
+    discrepancies: list[Discrepancy],
+) -> None:
+    if graph.part_family != "base_plate_v0":
+        return
+
+    feature_names = {feature.name for feature in report.features}
+    for expected in ("BasePlate_Extrude", "Mounting_Holes_Cut"):
+        if any(op.type == "extrude_cut" for op in graph.operations) or expected == "BasePlate_Extrude":
+            if expected not in feature_names:
+                discrepancies.append(Discrepancy(
+                    category="missing_feature",
+                    severity="error",
+                    expected=expected,
+                    actual=", ".join(sorted(feature_names)) or "none",
+                    message=f"Expected feature '{expected}' was not found in PartReport.",
+                ))
+
+    circle_ops = [op for op in graph.operations if isinstance(op, AddCirclesOp)]
+    if not circle_ops:
+        return
+
+    expected_count = sum(len(op.circles) for op in circle_ops)
+    sketch_names = {sketch.name: sketch for sketch in report.sketches}
+    hole_sketch = sketch_names.get("hole_profile")
+    if hole_sketch is None:
+        discrepancies.append(Discrepancy(
+            category="sketch_entity_count",
+            severity="warning",
+            expected=f"{expected_count} circle entities in hole_profile",
+            actual="hole_profile not reported",
+            message="PartReport did not include hole_profile sketch details; hole count could not be proven.",
+        ))
+        return
+
+    if hole_sketch.entity_count is None or hole_sketch.entity_count < 0:
+        discrepancies.append(Discrepancy(
+            category="sketch_entity_count",
+            severity="warning",
+            expected=f"{expected_count} circle entities",
+            actual="unknown",
+            message="Sketch entity extraction did not report an exact count.",
+        ))
+    elif hole_sketch.entity_count != expected_count:
+        discrepancies.append(Discrepancy(
+            category="sketch_entity_count",
+            severity="error",
+            expected=str(expected_count),
+            actual=str(hole_sketch.entity_count),
+            message="Hole sketch entity count differs from requested CoordinatePlan.",
+        ))

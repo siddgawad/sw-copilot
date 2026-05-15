@@ -16,7 +16,9 @@ import pytest
 from agents.macro_engineer import (
     _COMPACT_REPAIR_ADDENDUM,
     _COMPACT_SYSTEM_PROMPT,
+    _ProviderQuotaError,
     _REPAIR_REPETITION_NOTE,
+    MacroEngineerAgent,
     _normalize_operations,
     _operations_from_message,
     _repair_loop_repeated,
@@ -261,3 +263,35 @@ def test_repair_loop_repeated_false_when_real_field_changed(changed_field, new_v
         ConversationMessage(role="assistant", content=b),
     ]
     assert _repair_loop_repeated(history) is False
+
+
+def test_provider_router_falls_back_after_quota(monkeypatch):
+    agent = MacroEngineerAgent.__new__(MacroEngineerAgent)
+    agent._provider = "nim"
+    agent._fallbacks = ["ollama"]
+    calls = []
+
+    def fake_call(provider, messages):
+        calls.append(provider)
+        if provider == "nim":
+            raise _ProviderQuotaError("nim quota")
+        return '{"operations":[{"id":"noop1","type":"noop","message":"ok"}]}'
+
+    monkeypatch.setattr(agent, "_call_provider", fake_call)
+
+    assert "noop1" in agent._call_with_fallback([])
+    assert calls == ["nim", "ollama"]
+
+
+def test_provider_router_reports_all_unavailable(monkeypatch):
+    agent = MacroEngineerAgent.__new__(MacroEngineerAgent)
+    agent._provider = "nim"
+    agent._fallbacks = ["ollama", "groq"]
+
+    def fake_call(provider, messages):
+        raise _ProviderQuotaError(f"{provider} unavailable")
+
+    monkeypatch.setattr(agent, "_call_provider", fake_call)
+
+    with pytest.raises(RuntimeError, match="All LLM providers are unavailable"):
+        agent._call_with_fallback([])

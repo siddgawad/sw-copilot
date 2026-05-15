@@ -332,6 +332,16 @@ namespace SwCopilotAddin.UI
                     return currentResponse;
                 }
 
+                if (IsDeterministicOperationGraph(graph))
+                {
+                    await ValidateExecutionResultAsync(graph, result);
+                    SetStatus("Error - deterministic execution failed");
+                    AppendMessage(
+                        "Agent",
+                        "Deterministic plan failed. Automatic repair was skipped because regenerating the same JSON would repeat the same failure. Check the run trace and PartReport before changing the planner.");
+                    return currentResponse;
+                }
+
                 if (repairAttempt >= MaxAutoRepairAttempts)
                 {
                     SetStatus("Error - auto-repair exhausted");
@@ -356,6 +366,11 @@ namespace SwCopilotAddin.UI
                 return false;
 
             return result.IndexOf("ERROR:", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool IsDeterministicOperationGraph(OperationGraphDto graph)
+        {
+            return string.Equals(graph.PartFamily, "base_plate_v0", StringComparison.OrdinalIgnoreCase);
         }
 
         private static string BuildAssistantHistoryContent(AgentResponse response, string? runtimeResult = null)
@@ -469,10 +484,14 @@ namespace SwCopilotAddin.UI
             string? partReportJson = ExtractPartReportJson(runtimeResult);
             if (string.IsNullOrWhiteSpace(partReportJson))
                 return "Done";
+            string? executorResultJson = ExtractExecutorResultJson(runtimeResult);
 
             try
             {
-                ValidationResponse validation = await _client.ValidateOperationAsync(graph, partReportJson!);
+                ValidationResponse validation = await _client.ValidateOperationAsync(
+                    graph,
+                    partReportJson!,
+                    executorResultJson);
                 AppendMessage("Validation", FormatValidationReport(validation));
 
                 if (!validation.Passed)
@@ -489,6 +508,19 @@ namespace SwCopilotAddin.UI
         private static string? ExtractPartReportJson(string runtimeResult)
         {
             const string marker = "Runtime (report): ";
+            string[] lines = runtimeResult.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+            foreach (string line in lines)
+            {
+                if (line.StartsWith(marker, StringComparison.Ordinal))
+                    return line.Substring(marker.Length).Trim();
+            }
+
+            return null;
+        }
+
+        private static string? ExtractExecutorResultJson(string runtimeResult)
+        {
+            const string marker = "Runtime (executor_result): ";
             string[] lines = runtimeResult.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
             foreach (string line in lines)
             {
