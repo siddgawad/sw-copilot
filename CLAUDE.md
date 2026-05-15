@@ -198,15 +198,31 @@ planner/review through Claude Code. Paid API models are not part of the default
 route. Whoever assigns the task **trims context for the receiver**, especially
 Qwen which has only 32K. Full rules in `docs/AGENT_PLAYBOOK.md`.
 
+## Product strategy (updated after market research — May 2026)
+
+Full findings: `docs/MARKET_RESEARCH_FINDINGS.md`.
+
+**Primary wedge (ship this first):** Workflow automation — batch exports, title block
+updates, drawing pre-checks, standards lookup with citations, macro generation.
+This is where engineer pain is real, MecAgent is strongest, and trust is earnable.
+
+**Secondary wedge (after workflow wedge proven):** Constrained geometry generation
+from templates (box, plate, shaft, bracket families). Machine-validated only.
+
+**Do NOT lead with:** Free-form natural language → arbitrary new part.
+That is the immature, skepticism-heavy part of the field. Defer to Phase 3.
+
+**Pricing target:** $29–49/mo individual; $149–249/mo team seat; Enterprise custom.
+
 ## Release plan
 
 End-to-end release ownership and milestones live in `docs/RELEASE_PLAN.md`.
 Current release architecture is:
 
-`prompt -> intent router -> deterministic pattern library -> OperationGraph -> C# executor -> PartReport -> validation`
+`prompt -> intent router -> [workflow ops | deterministic templates] -> OperationGraph -> C# executor -> PartReport -> validation`
 
-Intent-to-JSON strategy lives in `docs/INTENT_TO_JSON_STRATEGY.md`. This is
-now the priority before expanding SolidWorks feature coverage.
+Market research findings live in `docs/MARKET_RESEARCH_FINDINGS.md`. This is
+now the controlling product strategy before expanding geometry generation.
 
 Routing for the next build wave:
 - `sw-builder-a`: local Ollama coding builder for backend fast-path router and primary implementation tasks.
