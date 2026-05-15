@@ -1,179 +1,234 @@
 # SW Copilot
 
-> Natural language → validated operation graph → deterministic SolidWorks execution.
+> **Chat with SolidWorks.** Natural language → validated operation graph → deterministic COM execution.
 > No macro injection. No hallucinated dimensions. No guessing.
 
----
-
-## The Problem
-
-Every CAD AI today does one of two things:
-
-1. **Generates a macro script** — and hopes the LLM didn't hallucinate a method name or an M8 hole diameter.
-2. **Wraps a chatbot around SolidWorks** — which means the LLM is load-bearing for geometry decisions.
-
-Both approaches fail in production. LLMs confidently produce wrong dimensions, call non-existent API methods, and have no concept of geometric validity.
-
-**SW Copilot is built differently.** The LLM is a compiler frontend. It emits structured intent. Everything after that is deterministic.
+[![Backend CI](https://github.com/siddgawad/sw-copilot/actions/workflows/backend-ci.yml/badge.svg)](https://github.com/siddgawad/sw-copilot/actions/workflows/backend-ci.yml)
+[![C# Build](https://github.com/siddgawad/sw-copilot/actions/workflows/csharp-build.yml/badge.svg)](https://github.com/siddgawad/sw-copilot/actions/workflows/csharp-build.yml)
 
 ---
 
-## Architecture
+## What it does
+
+Type a request in the SolidWorks task pane. SW Copilot creates parts, updates title blocks, exports drawings, and checks for quality issues — all through live COM API calls.
+
+**No scripts are generated. No macro files are written. Everything executes against the live document.**
+
+```
+You: "create a 50mm wide 30mm deep 20mm tall box"
+SW Copilot: creates sketch + extrude in the active part document
+
+You: "add four M6 counterbore holes at the corners"
+SW Copilot: places holes using exact ISO 4762 dimensions (clearance 6.6mm, counterbore ∅11mm)
+
+You: "set revision to C, drawn by Siddhant"
+SW Copilot: writes custom properties to the document
+
+You: "export this as PDF"
+SW Copilot: saves a PDF to the same folder as the document
+
+You: "check this drawing for problems"
+SW Copilot: reports missing title block fields, empty sheets, dangling dimensions
+```
+
+---
+
+## Why it works differently
+
+Every CAD AI tool makes the same mistake: it puts the LLM in the execution path.
+
+**LLMs cannot be trusted for exact dimensions.** They hallucinate screw clearances. They call non-existent API methods. They generate valid-looking code that does the wrong thing.
+
+SW Copilot treats the LLM as a compiler frontend, not an executor:
 
 ```
 User prompt
     │
     ▼
-┌─────────────────────────────────────────────────────┐
-│  Python Backend  (agent-backend/)                   │
-│                                                     │
-│  1. dimension_resolver.py                           │
-│     └─ Scans prompt for M3–M30 fastener refs        │
-│        Injects exact ISO 273 / ISO 4762 numbers     │
-│        before LLM ever sees the prompt              │
-│                                                     │
-│  2. RAG (ChromaDB)                                  │
-│     └─ Retrieves engineering text for context       │
-│        Explanatory only — never for exact numbers   │
-│                                                     │
-│  3. macro_engineer.py  (Groq / LLaMA-3)             │
-│     └─ Emits OperationGraph JSON with               │
-│        reasoning scratchpad                         │
-│                                                     │
-│  4. Pydantic validation                             │
-│     └─ Schema enforced before any execution         │
-└─────────────────┬───────────────────────────────────┘
-                  │  HTTP + X-Copilot-Token
-                  ▼
-┌─────────────────────────────────────────────────────┐
-│  C# Add-in  (sw-addin-client/)                      │
-│                                                     │
-│  5. DTO validation                                  │
-│     └─ C# mirrors Python schema exactly             │
-│                                                     │
-│  6. ValidateGraph()  — rule engine                  │
-│     └─ Refuses geometric impossibilities            │
-│        before any COM call                          │
-│                                                     │
-│  7. OperationExecutor.Execute()                     │
-│     └─ 12 deterministic SolidWorks COM operations   │
-│        No scripts. No eval. No string-built code.   │
-└─────────────────────────────────────────────────────┘
+[dimension_resolver.py]  ←── ISO 273/4762 lookup tables (deterministic, exact numbers)
+    │
+    ▼
+[Groq / LLaMA-3]         ←── emits structured OperationGraph JSON only
+    │
+    ▼
+[Pydantic validation]    ←── schema checked before any execution
+    │
+    ▼  HTTP + token auth
+[C# ValidateGraph()]     ←── geometric rule engine (rejects impossibilities before COM)
+    │
+    ▼
+[OperationExecutor]      ←── 15 deterministic SolidWorks COM operations
 ```
+
+The LLM outputs JSON. The C# executor runs it. Dimensions come from ISO tables, not the model.
 
 ---
 
 ## Supported Operations
 
-| Operation | Description |
+### Geometry
+
+| Operation | Example |
 |---|---|
-| `sketch` | Rectangle or circle on any plane or face |
-| `extrude_boss` | Solid extrusion from sketch |
-| `extrude_cut` | Cut extrusion (pocket) |
-| `hole_wizard` | Drilled / counterbore / countersink holes (ISO sizes) |
-| `fillet` | Edge fillet with radius |
-| `chamfer` | Edge chamfer with distance |
-| `circular_pattern` | Circular feature pattern |
-| `linear_pattern` | Linear feature pattern (1D or 2D) |
-| `mirror` | Mirror features across plane |
-| `revolve` | Revolve sketch around axis |
-| `delete_feature` | Remove feature from tree |
-| `noop` | Acknowledged but skipped (with reason) |
+| `sketch` | Rectangle or circle on any plane or feature face |
+| `extrude_boss` | "extrude the sketch 20mm" |
+| `extrude_cut` | "cut a pocket 5mm deep" |
+| `hole_wizard` | "4 M6 counterbore holes at corners" — uses ISO dimensions |
+| `fillet` | "2mm fillet on all edges" |
+| `chamfer` | "1mm chamfer" |
+| `circular_pattern` | "6 holes on 60mm bolt circle" |
+| `linear_pattern` | "3×4 array, 20mm spacing" |
+| `mirror` | "mirror across right plane" |
+| `revolve` | "revolve the profile 360°" |
+| `delete_feature` | "delete everything" |
+
+### Workflow Automation (the high-value wedge)
+
+| Operation | Example |
+|---|---|
+| `update_title_block` | "set revision to C, drawn by John, date today" |
+| `export_file` | "export as PDF with revision in the filename" |
+| `check_drawing` | "check this drawing for issues" — advisory only, never modifies |
 
 ---
 
-## Demo Prompts
+## Demo Prompts to Try
 
 ```
+# Part creation
 create a 50mm wide 30mm deep 20mm tall box
 add four M6 counterbore holes at the corners
 add a 2mm fillet on all edges
 create a 40mm diameter shaft 100mm long
 add 6 M5 holes on a 60mm bolt circle
+
+# Workflow automation
+set revision to B, drawn by Siddhant, date 2026-05-15
+export this drawing as DXF
+export as PDF with filename {docname}_Rev{revision}_{date}
+check this drawing for problems
+set the description to "Mounting Plate Assembly"
 ```
 
-The system looks up M5 and M6 dimensions from ISO 273/4762 tables — not from LLM memory.
+---
+
+## Quick Install (for a friend)
+
+**Prerequisites:** SolidWorks 2021, Windows 10/11 x64, .NET Framework 4.8
+
+### Step 1 — Get a free API key
+
+Go to [console.groq.com/keys](https://console.groq.com/keys), sign in, create a key. It's free.
+
+### Step 2 — Download the release
+
+Download `sw-copilot-beta.zip` from [Releases](https://github.com/siddgawad/sw-copilot/releases).
+
+Extract it somewhere permanent (e.g. `C:\sw-copilot\`). **Do not run from inside the ZIP.**
+
+### Step 3 — Set your API key
+
+Open `addin\backend\SwCopilotBackend\.env.example`, copy it to `.env` in the same folder, and set:
+
+```
+GROQ_API_KEY=your_key_here
+```
+
+### Step 4 — Install the add-in
+
+Close SolidWorks. Open PowerShell as Administrator:
+
+```powershell
+cd C:\sw-copilot
+.\Install-SwCopilot.ps1
+```
+
+If your SolidWorks is in a different folder:
+
+```powershell
+.\Install-SwCopilot.ps1 -SolidWorksPath "C:\Program Files\SOLIDWORKS Corp\SOLIDWORKS 2022"
+```
+
+### Step 5 — Enable in SolidWorks
+
+Start SolidWorks → **Tools → Add-Ins** → check **SW Copilot** → click OK.
+
+The chat panel appears on the right side. Open a part or drawing and start typing.
+
+### Uninstall
+
+```powershell
+.\Uninstall-SwCopilot.ps1
+```
 
 ---
 
-## Standards Data (deterministic, not RAG)
+## Developer Setup (build from source)
 
-All fastener dimensions come from hardcoded lookup tables — **not** from the LLM and **not** from vector search:
-
-| Standard | Data |
-|---|---|
-| ISO 273:2003 | Clearance holes M1.6–M30 (close / normal / loose) |
-| ISO 4762:2004 | Socket head cap screw counterbore dimensions |
-| ISO 10642:2004 | Countersink dimensions (90°) |
-| ISO 724 / ISO 965 | Tap drill sizes + minimum thread engagement |
-
----
-
-## Requirements
-
-**Backend**
-- Python 3.11+
-- Groq API key (free tier works: `groq.com`)
-
-**Add-in**
-- SolidWorks 2021 (tested) — other versions untested
-- Windows 10/11 x64
-- .NET Framework 4.8
-
----
-
-## Setup
-
-### 1. Backend
+### Backend
 
 ```powershell
 cd agent-backend
 python -m venv .venv
 .venv\Scripts\pip install -r requirements.txt
 
-# Create .env
+# Create config
 echo GROQ_API_KEY=your_key_here > .env
+
+# Run tests (232 tests, ~3 seconds)
+.venv\Scripts\python -m pytest -q
 
 # Start server
 .venv\Scripts\python -m uvicorn main:app --host 127.0.0.1 --port 8001
 ```
 
-### 2. C# Add-in
+### C# Add-in
 
 ```powershell
-# Close SolidWorks first
 cd sw-addin-client
-dotnet build SwCopilotAddin.csproj -c Release -p:Platform=x64 `
-  -p:RegisterForComInterop=false `
-  -p:OutDir=bin\x64\Release-beta3\net48\
+dotnet build SwCopilotAddin.csproj -c Release -p:Platform=x64 -p:RegisterForComInterop=false
 
-# Register (elevated PowerShell)
+# Register (elevated PowerShell — close SolidWorks first)
 .\Register-DevAddin.ps1
 ```
 
-Open SolidWorks — the Copilot task pane appears on the right.
+### Build installer package
+
+```powershell
+.\scripts\Build-BetaPackage.ps1
+# Produces: artifacts/sw-copilot-beta.zip
+```
+
+---
+
+## Standards Data (deterministic, not AI)
+
+All fastener dimensions come from hardcoded lookup tables — never from the LLM:
+
+| Standard | Data |
+|---|---|
+| ISO 273:2003 | Clearance holes M1.6–M30 |
+| ISO 4762:2004 | Socket head counterbore dimensions |
+| ISO 10642:2004 | Countersink dimensions (90°) |
+| ISO 724 / ISO 965 | Tap drill sizes |
 
 ---
 
 ## Security
 
-- Backend generates a 64-char hex token at startup
-- Token written to `%LOCALAPPDATA%\SwCopilotAddin\backend.token`
-- All API routes require `X-Copilot-Token` header (timing-safe comparison)
-- Context strings sanitized before LLM: newlines, backticks, control chars, injection markers redacted, truncated to 1024 chars
+- Backend generates a 64-char hex token at startup; all API routes require it
+- Context strings sanitized before LLM call (newlines, backticks, injection markers redacted)
 - Pre-execution rule engine rejects geometric impossibilities before any COM call
-- No macro code execution by default — Roslyn path is legacy and always behind a preview dialog
+- No macro code generation or execution by default
 
 ---
 
 ## Limitations
 
-- SolidWorks 2021 only (COM signatures differ across versions)
-- Part documents only — assemblies and drawings not supported yet
-- Multi-body parts: operations target the primary body
-- Cross-session feature references fall back to top-face heuristic
-- No post-execution validation yet (planned Week 2)
-- LLM output is validated but not formally verified
+- Tested on SolidWorks 2021 — COM signatures differ between versions
+- Part documents primary target; drawing operations (`export_file`, `check_drawing`, `update_title_block`) work on drawings too
+- Multi-body parts target the primary body
+- No undo for multi-operation sequences yet (individual SolidWorks undo works)
 
 ---
 
@@ -182,27 +237,30 @@ Open SolidWorks — the Copilot task pane appears on the right.
 ```
 sw-copilot/
 ├── agent-backend/          # Python FastAPI backend
-│   ├── agents/             # LLM planner + RAG agent
+│   ├── agents/             # LLM planner + RAG + fast-path parsers
 │   ├── standards/          # Deterministic ISO lookup tables
-│   ├── rag/                # ChromaDB vector store
+│   ├── rag/                # ChromaDB vector store (explanatory text only)
 │   ├── knowledge/          # Built-in engineering reference docs
 │   ├── models/             # Pydantic schemas
-│   └── tests/              # 48 security + schema regression tests
+│   ├── patterns/           # Deterministic pattern library (gear, shaft, box, cylinder)
+│   └── tests/              # 232 tests: security, schema, fast-paths
 │
-└── sw-addin-client/        # C# .NET 4.8 SolidWorks add-in
-    ├── AddinCore/           # COM entry point
-    ├── UI/                  # WinForms task pane
-    ├── Client/              # Backend HTTP client + DTOs
-    └── Execution/           # SolidWorks COM executor (12 op types)
+├── sw-addin-client/        # C# .NET 4.8 SolidWorks add-in
+│   ├── AddinCore/          # COM entry point
+│   ├── UI/                 # WinForms task pane (chat UI)
+│   ├── Client/             # Backend HTTP client + DTOs
+│   └── Execution/          # SolidWorks COM executor (15 operation types)
+│
+└── scripts/                # Build and packaging scripts
 ```
 
 ---
 
 ## Contributing
 
-This is an active early-stage project. If you work in mechanical engineering or CAD automation, issues and PRs are welcome.
+This is an early-stage project targeting mechanical engineers who spend time on repetitive CAD tasks.
 
-The clearest contribution path right now: **test it against your own SolidWorks version** and report which COM calls break. Each confirmed API signature makes the executor more robust.
+**The most useful contribution:** test it with your SolidWorks version and report which COM calls behave differently. Each confirmed API signature makes the executor more reliable across installations.
 
 ---
 

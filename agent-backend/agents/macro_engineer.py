@@ -175,6 +175,42 @@ delete_feature — delete features
   feature_ids empty + last_n N   = delete last N features.
   feature_ids populated           = delete those specific features by name.
 
+update_title_block — set custom property fields on the active document (part or drawing)
+{
+  "id": string,
+  "type": "update_title_block",
+  "title_block": {
+    "revision":    string | null,    // e.g. "C"
+    "drawn_by":    string | null,    // e.g. "John Smith"
+    "checked_by":  string | null,    // e.g. "Jane"
+    "title":       string | null,    // maps to Description property
+    "date":        string | null,    // ISO date e.g. "2026-05-15"
+    "custom":      { "key": "value" }  // any extra custom properties
+  }
+}
+  Use whenever the user asks to set revision, drawn by, checked by, title, date, or any named custom property.
+  Only populate the fields the user mentions; omit the rest (null).
+
+export_file — save the active document to a different format
+{
+  "id": string,
+  "type": "export_file",
+  "export_file": {
+    "format": "PDF" | "DXF" | "STEP" | "IGES" | "STL",
+    "output_path": string | null,        // absolute folder path or null = same folder as doc
+    "filename_template": string | null   // tokens: {title} {revision} {date} {docname}
+  }
+}
+  Use when user asks to export, save as, convert, or batch export.
+
+check_drawing — advisory-only scan of the active drawing for common issues
+{
+  "id": string,
+  "type": "check_drawing"
+}
+  Reports: missing title block properties, empty drawing sheets, dangling dimensions.
+  Never modifies the document. Use when user says "check", "validate", "review", "QA", "audit" the drawing.
+
 noop — respond without executing any CAD (clarification, greeting, unsupported)
 {
   "id": string,
@@ -240,6 +276,27 @@ EXAMPLE 5 — simple box
 User: "create a 50mm x 40mm x 30mm box"
 Output:
 {"part_name":"box","assumptions":["symmetric about origin","extruded from Top Plane"],"missing_inputs":[],"operations":[{"id":"sk1","type":"sketch","plane":"Top Plane","entities":[{"type":"rectangle","x1_mm":-25,"y1_mm":-20,"x2_mm":25,"y2_mm":20}],"named_dims":[{"name":"length","value_mm":50},{"name":"width","value_mm":40}]},{"id":"f1","type":"extrude_boss","profile_id":"sk1","depth_mm":30,"name":"Base"}]}
+
+════════════════════════════════════════
+EXAMPLE 6 — title block update
+════════════════════════════════════════
+User: "set revision to C, drawn by John Smith, date today"
+Output:
+{"part_name":null,"reasoning":"User wants title block fields updated: revision=C, drawn_by=John Smith, date=today (2026-05-15).","missing_inputs":[],"assumptions":["date interpreted as today 2026-05-15"],"operations":[{"id":"tb1","type":"update_title_block","title_block":{"revision":"C","drawn_by":"John Smith","date":"2026-05-15","checked_by":null,"title":null,"custom":{}}}]}
+
+════════════════════════════════════════
+EXAMPLE 7 — export drawing
+════════════════════════════════════════
+User: "export this as PDF with revision in the filename"
+Output:
+{"part_name":null,"reasoning":"User wants to export active document to PDF using filename template that includes revision.","missing_inputs":[],"assumptions":["output goes to same folder as the document"],"operations":[{"id":"ef1","type":"export_file","export_file":{"format":"PDF","output_path":null,"filename_template":"{docname}_Rev{revision}_{date}"}}]}
+
+════════════════════════════════════════
+EXAMPLE 8 — drawing quality check
+════════════════════════════════════════
+User: "check this drawing for problems"
+Output:
+{"part_name":null,"reasoning":"User wants an advisory scan of the drawing for missing properties, empty sheets, and dangling dimensions.","missing_inputs":[],"assumptions":[],"operations":[{"id":"cd1","type":"check_drawing"}]}
 """
 
 
@@ -260,6 +317,12 @@ Operation types:
 - hole_wizard: {"id":str,"type":"hole_wizard","face_of":str,"hole_type":"simple|counterbore|countersink|tapped","fastener_size":"M3|M4|M5|M6|M8|M10|M12","through_all":bool,"depth_mm":num,"positions":[{"x_mm":num,"y_mm":num}]}
 - fillet/chamfer: use feature_ids; empty feature_ids means all user features.
 - circular_pattern: {"id":str,"type":"circular_pattern","source_ids":[str],"count":int,"pcd_mm":num}
+- update_title_block: {"id":str,"type":"update_title_block","title_block":{"revision":str|null,"drawn_by":str|null,"checked_by":str|null,"title":str|null,"date":str|null,"custom":{}}}
+  Use when user asks to set revision, drawn_by, checked_by, title, date, or any named property.
+- export_file: {"id":str,"type":"export_file","export_file":{"format":"PDF|DXF|STEP|IGES|STL","output_path":str|null,"filename_template":str|null}}
+  filename_template tokens: {title} {revision} {date} {docname}. Use when user says export/save as/convert.
+- check_drawing: {"id":str,"type":"check_drawing"}
+  Advisory scan only — never modifies doc. Use when user says check/validate/review/audit the drawing.
 - linear_pattern, mirror, revolve, delete_feature, noop are allowed only when clearly requested.
 
 Rules:
