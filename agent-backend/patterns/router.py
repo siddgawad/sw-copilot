@@ -12,10 +12,12 @@ from __future__ import annotations
 from models.schemas import OperationGraph
 from agents.box_v0 import try_generate as try_generate_box
 from agents.cylinder_v0 import try_generate as try_generate_cylinder
+from agents.help_v0 import try_generate as try_generate_help
 from patterns.gear import try_generate_gear
 from patterns.shaft import try_generate_shaft
 
 _HANDLERS = [
+    try_generate_help,    # must be first — greetings/help before geometry parsers
     try_generate_gear,
     try_generate_shaft,
     try_generate_box,

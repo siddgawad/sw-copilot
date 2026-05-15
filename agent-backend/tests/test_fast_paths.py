@@ -1,7 +1,33 @@
-"""Tests for deterministic box and cylinder fast-path parsers."""
+"""Tests for deterministic box, cylinder, and help fast-path parsers."""
 import pytest
 from agents.box_v0 import match as box_match, try_generate as box_try
 from agents.cylinder_v0 import match as cyl_match, try_generate as cyl_try
+from agents.help_v0 import match as help_match, try_generate as help_try
+
+
+# ── help_v0 ────────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("prompt", [
+    "hi", "hello", "hey", "what can you do", "help",
+    "what do you do", "what are your capabilities", "getting started",
+])
+def test_help_match(prompt):
+    assert help_match(prompt), f"Should match: {prompt!r}"
+
+
+@pytest.mark.parametrize("prompt", [
+    "create a box", "50mm shaft", "add holes",
+])
+def test_help_no_match(prompt):
+    assert not help_match(prompt), f"Should not match: {prompt!r}"
+
+
+def test_help_graph_is_noop():
+    graph = help_try("hi")
+    assert graph is not None
+    assert len(graph.operations) == 1
+    assert graph.operations[0].type == "noop"
+    assert "box" in graph.operations[0].message.lower()
 
 
 # ── box_v0 matching ────────────────────────────────────────────────────────────
