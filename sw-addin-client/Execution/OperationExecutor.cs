@@ -992,7 +992,14 @@ namespace SwCopilotAddin.Execution
             if (op.ExportFile == null) return "ERROR: export_file config required";
 
             string docPath = doc.GetPathName() ?? "";
+            if (string.IsNullOrEmpty(docPath) && string.IsNullOrEmpty(op.ExportFile.OutputPath))
+                return "ERROR: export_file requires the document to be saved first (File → Save), or specify output_path";
+
             string dir     = op.ExportFile.OutputPath ?? Path.GetDirectoryName(docPath) ?? "";
+            if (string.IsNullOrEmpty(dir)) dir = Path.GetTempPath();
+            if (!Directory.Exists(dir))
+                return $"ERROR: export output directory does not exist: {dir}";
+
             string baseName = BuildExportFilename(doc, op.ExportFile.FilenameTemplate
                                ?? Path.GetFileNameWithoutExtension(docPath));
 
