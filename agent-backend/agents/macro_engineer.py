@@ -342,6 +342,10 @@ Rules:
 14. CIRCLE SIZE DEFAULT: "a circle 30mm", "30mm circle", "circle of 30mm" all mean DIAMETER 30. Set radius_mm = 15. Only use radius_mm = N when the prompt explicitly says "radius Nmm" or "Nmm radius". Same for cylinders/shafts: "40mm shaft" = 40 diameter = radius 20.
 15. AXIS MAPPING for box requests on Top Plane: "wide" or "width" -> rectangle x-extent (x2-x1); "deep" or "depth" -> rectangle y-extent (y2-y1); "tall" or "height" -> extrude_boss depth_mm. For "50mm wide 30mm deep 20mm tall" build rectangle (-25,-15)->(25,15) and extrude depth_mm=20. Never swap depth and height.
 16. AXIS MAPPING on Front Plane: "wide" -> rectangle x-extent; "tall"/"height" -> rectangle y-extent; "deep"/"depth"/"long"/"length" -> extrude_boss depth_mm. For shafts: diameter sets the circle radius_mm; "long"/"length" sets extrude depth_mm.
+17. DOCUMENT TYPE: Read "Active Document Type" from the context block. If it is "Part", do NOT emit check_drawing or any drawing-only operation — emit noop explaining the active document is a part, not a drawing. If it is "None" or "Drawing", check_drawing is valid.
+18. CAPABILITY QUESTIONS: If the user asks "what can you do?", "help", "how do you work?", or similar, emit a noop with a message listing the key operations: part creation, holes, fillets, title block updates, PDF/DXF export, drawing QA checks.
+19. TITLE BLOCK: When user says "set drawn by", "update revision", "mark as checked by", "set date", "set description" — always emit update_title_block with only the fields mentioned; leave others null.
+20. EXPORT: "save as PDF/DXF/STEP" → export_file. "save to folder X" → export_file with output_path=X. "export with revision in name" → filename_template containing {revision}.
 
 Output only valid JSON.
 """
@@ -532,7 +536,9 @@ def try_fast_path_clarification(
 
 
 def _build_context_block(ctx: DocumentContext, rag_context: str = "") -> str:
+    from datetime import date
     lines = [
+        f"Today's Date         : {date.today().isoformat()}",
         f"Active Document Type : {ctx.document_type}",
         f"Solid Body Count     : {ctx.body_count}",
         f"File Path            : {ctx.file_path or 'Unsaved / new document'}",

@@ -1061,7 +1061,8 @@ namespace SwCopilotAddin.Execution
                     issues.Add($"MISSING_PROPERTY: '{key}' is empty");
             }
 
-            // Check 2: sheets have views
+            // Check 2: sheets have views — restore active sheet afterwards
+            string? originalSheet = (drawing.GetCurrentSheet() as ISheet)?.GetName();
             object[]? sheets = drawing.GetSheetNames() as object[];
             foreach (object sheetName in sheets ?? Array.Empty<object>())
             {
@@ -1070,6 +1071,7 @@ namespace SwCopilotAddin.Execution
                 if (views == null || views.Length == 0)
                     issues.Add($"EMPTY_SHEET: sheet '{sheetName}' has no drawing views");
             }
+            if (originalSheet != null) drawing.ActivateSheet(originalSheet);
 
             // Check 3: dangling dimensions
             object[]? annots = doc.Extension.GetAnnotations() as object[];
