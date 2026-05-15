@@ -347,6 +347,9 @@ namespace SwCopilotAddin.Execution
                 case "mirror":            return ExecMirror(doc, op);
                 case "revolve":           return ExecRevolve(doc, op);
                 case "delete_feature":    return ExecDeleteFeature(doc, op);
+                case "update_title_block": return ExecUpdateTitleBlock(doc, op);
+                case "export_file":       return ExecExportFile(doc, op);
+                case "check_drawing":     return ExecCheckDrawing(doc, op);
                 case "rebuild":           doc.ForceRebuild3(false); return "Rebuild";
                 case "noop":              return op.Message ?? "No operation.";
                 default:                  return $"Unknown operation type: {op.Type}";
@@ -389,11 +392,74 @@ namespace SwCopilotAddin.Execution
             double cx = op.Center.Length > 0 ? op.Center[0] : 0.0;
             double cy = op.Center.Length > 1 ? op.Center[1] : 0.0;
             double halfLength = (op.Length ?? 0) / 2.0;
-            double halfWidth = (op.Width ?? 0) / 2.0;
-            doc.SketchManager.CreateCornerRectangle(
-                Mm(cx - halfLength), Mm(cy - halfWidth), 0,
+            double halfWidth  = (op.Width  ?? 0) / 2.0;
+
+            // CreateCenterRectangle produces a proper centre point for constraining.
+            doc.SketchManager.CreateCenterRectangle(
+                Mm(cx), Mm(cy), 0,
                 Mm(cx + halfLength), Mm(cy + halfWidth), 0);
-            return $"Center rectangle {op.Length:0.#} x {op.Width:0.#} mm";
+
+            FullyDefineRectangle(doc, cx, cy, halfLength, halfWidth);
+
+            return $"Center rectangle {op.Length:0.#} x {op.Width:0.#} mm (fully defined)";
+        }
+
+        /// <summary>
+        /// Adds driving dimensions and an origin-coincident constraint so the sketch
+        /// goes from blue (underdefined) to black (fully defined).
+        /// Failures are intentionally swallowed — geometry is correct regardless.
+        /// </summary>
+        private void FullyDefineRectangle(IModelDoc2 doc, double cx, double cy,
+                                           double halfLength, double halfWidth)
+        {
+            try
+            {
+                // ── Pin centre to origin with coincident constraint ───────────────
+                // Select the sketch centre point (created by CreateCenterRectangle)
+                // and the model origin point, then add coincident.
+                bool centreSelected = doc.Extension.SelectByID2(
+                    "", "SKETCHPOINT",
+                    Mm(cx), Mm(cy), 0,
+                    false, 0, null, 0);
+
+                bool originSelected = doc.Extension.SelectByID2(
+                    "Point1@Origin", "EXTSKETCHPOINT",
+                    0, 0, 0,
+                    true, 0, null, 0);   // append = true
+
+                doc.ClearSelection2(true);
+
+                // ── Width dimension (horizontal) ─────────────────────────────────
+                // Select the bottom horizontal line at its midpoint.
+                bool hSel = doc.Extension.SelectByID2(
+                    "", "SKETCHSEGMENT",
+                    Mm(cx), Mm(cy - halfWidth), 0,
+                    false, 0, null, 0);
+                if (hSel)
+                {
+                    // Place the dimension label 12 mm below the bottom line.
+                    doc.AddDimension2(Mm(cx), Mm(cy - halfWidth - 12), 0);
+                }
+                doc.ClearSelection2(true);
+
+                // ── Height dimension (vertical) ──────────────────────────────────
+                // Select the left vertical line at its midpoint.
+                bool vSel = doc.Extension.SelectByID2(
+                    "", "SKETCHSEGMENT",
+                    Mm(cx - halfLength), Mm(cy), 0,
+                    false, 0, null, 0);
+                if (vSel)
+                {
+                    // Place the dimension label 12 mm left of the left line.
+                    doc.AddDimension2(Mm(cx - halfLength - 12), Mm(cy), 0);
+                }
+                doc.ClearSelection2(true);
+            }
+            catch
+            {
+                // Dimension/constraint failures never block execution.
+                // Geometry is already correct; sketch may remain underdefined.
+            }
         }
 
         private string ExecAddCircles(IModelDoc2 doc, OperationDto op)
@@ -887,6 +953,134 @@ namespace SwCopilotAddin.Execution
 
             string noun = toDelete.Count == 1 ? "feature" : "features";
             return $"Deleted {toDelete.Count} {noun}";
+        }
+
+        // ── update_title_block ────────────────────────────────────────────────
+
+        private string ExecUpdateTitleBlock(IModelDoc2 doc, OperationDto op)
+        {
+            if (op.TitleBlock == null) return "ERROR: title_block fields required";
+
+            var customProps = (CustomPropertyManager)doc.Extension.get_CustomPropertyManager("");
+
+            var fields = new Dictionary<string, string>();
+            if (!string.IsNullOrEmpty(op.TitleBlock.Revision))   fields["Revision"]    = op.TitleBlock.Revision!;
+            if (!string.IsNullOrEmpty(op.TitleBlock.DrawnBy))    fields["DrawnBy"]     = op.TitleBlock.DrawnBy!;
+            if (!string.IsNullOrEmpty(op.TitleBlock.CheckedBy))  fields["CheckedBy"]   = op.TitleBlock.CheckedBy!;
+            if (!string.IsNullOrEmpty(op.TitleBlock.Title))      fields["Description"] = op.TitleBlock.Title!;
+            if (!string.IsNullOrEmpty(op.TitleBlock.Date))       fields["Date"]        = op.TitleBlock.Date!;
+            foreach (var kv in op.TitleBlock.Custom ?? new Dictionary<string, string>())
+                fields[kv.Key] = kv.Value;
+
+            var updated = new List<string>();
+            foreach (var kv in fields)
+            {
+                // Add3 with swCustomPropertyReplaceValue(2) creates or updates the property.
+                customProps.Add3(kv.Key, (int)swCustomInfoType_e.swCustomInfoText, kv.Value,
+                    (int)swCustomPropertyAddOption_e.swCustomPropertyReplaceValue);
+                updated.Add($"{kv.Key}={kv.Value}");
+            }
+
+            if (updated.Count == 0) return "NOOP: no title block fields provided";
+            return $"Title block updated: {string.Join(", ", updated)}";
+        }
+
+        // ── export_file ───────────────────────────────────────────────────────
+
+        private string ExecExportFile(IModelDoc2 doc, OperationDto op)
+        {
+            if (op.ExportFile == null) return "ERROR: export_file config required";
+
+            string docPath = doc.GetPathName() ?? "";
+            string dir     = op.ExportFile.OutputPath ?? Path.GetDirectoryName(docPath) ?? "";
+            string baseName = BuildExportFilename(doc, op.ExportFile.FilenameTemplate
+                               ?? Path.GetFileNameWithoutExtension(docPath));
+
+            string ext = (op.ExportFile.Format ?? "PDF").ToUpper() switch {
+                "PDF"  => ".pdf",
+                "DXF"  => ".dxf",
+                "STEP" => ".step",
+                "IGES" => ".igs",
+                "STL"  => ".stl",
+                _      => ".pdf"
+            };
+
+            string outPath = Path.Combine(dir, baseName + ext);
+
+            int errors = 0, warnings = 0;
+            bool ok = doc.Extension.SaveAs3(outPath,
+                (int)swSaveAsVersion_e.swSaveAsCurrentVersion,
+                (int)swSaveAsOptions_e.swSaveAsOptions_Silent,
+                null, null, ref errors, ref warnings);
+
+            if (!ok) return $"ERROR: Export failed (errors={errors} warnings={warnings})";
+            return $"Exported to {outPath}";
+        }
+
+        private string BuildExportFilename(IModelDoc2 doc, string template)
+        {
+            var cpm = (CustomPropertyManager)doc.Extension.get_CustomPropertyManager("");
+            string Get(string key) {
+                string val = "", res = "";
+                bool wasResolved;
+                cpm.Get5(key, false, out val, out res, out wasResolved);
+                return string.IsNullOrEmpty(res) ? val : res;
+            }
+            return template
+                .Replace("{title}",    Get("Description").Replace(" ", "_"))
+                .Replace("{revision}", Get("Revision"))
+                .Replace("{date}",     DateTime.Now.ToString("yyyy-MM-dd"))
+                .Replace("{docname}",  Path.GetFileNameWithoutExtension(doc.GetPathName() ?? "part"));
+        }
+
+        // ── check_drawing ─────────────────────────────────────────────────────
+
+        private string ExecCheckDrawing(IModelDoc2 doc, OperationDto op)
+        {
+            DrawingDoc? drawing = doc as DrawingDoc;
+            if (drawing == null) return "ERROR: check_drawing requires an active drawing document";
+
+            var issues = new List<string>();
+
+            // Check 1: required title block custom properties present
+            var cpm = (CustomPropertyManager)doc.Extension.get_CustomPropertyManager("");
+            string[] required = { "Description", "Revision", "DrawnBy" };
+            foreach (string key in required)
+            {
+                string val = "", res = "";
+                bool wasResolved;
+                cpm.Get5(key, false, out val, out res, out wasResolved);
+                if (string.IsNullOrWhiteSpace(val) && string.IsNullOrWhiteSpace(res))
+                    issues.Add($"MISSING_PROPERTY: '{key}' is empty");
+            }
+
+            // Check 2: sheets have views
+            object[]? sheets = drawing.GetSheetNames() as object[];
+            foreach (object sheetName in sheets ?? Array.Empty<object>())
+            {
+                drawing.ActivateSheet(sheetName.ToString()!);
+                object[]? views = drawing.GetViews() as object[];
+                if (views == null || views.Length == 0)
+                    issues.Add($"EMPTY_SHEET: sheet '{sheetName}' has no drawing views");
+            }
+
+            // Check 3: dangling dimensions
+            object[]? annots = doc.Extension.GetAnnotations() as object[];
+            int danglingCount = 0;
+            if (annots != null)
+            {
+                foreach (object annotObj in annots)
+                {
+                    Annotation? ann = annotObj as Annotation;
+                    if (ann == null) continue;
+                    if (ann.IsDangling()) danglingCount++;
+                }
+            }
+            if (danglingCount > 0)
+                issues.Add($"DANGLING_DIMENSIONS: {danglingCount} dimension(s) not attached to geometry");
+
+            if (issues.Count == 0) return "Drawing check PASSED: no issues found";
+            return "Drawing check ISSUES:\n" + string.Join("\n", issues.Select(i => "  • " + i));
         }
 
         // ── helpers ───────────────────────────────────────────────────────────

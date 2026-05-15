@@ -466,6 +466,39 @@ class NoopOp(BaseModel):
     message: str = ""
 
 
+class TitleBlockFields(BaseModel):
+    revision:    Optional[str]       = None
+    drawn_by:    Optional[str]       = None
+    checked_by:  Optional[str]       = None
+    title:       Optional[str]       = None
+    description: Optional[str]       = None
+    date:        Optional[str]       = None  # ISO date string e.g. "2026-05-15"
+    custom:      dict[str, str]      = Field(default_factory=dict)
+
+
+class UpdateTitleBlockOp(BaseModel):
+    id:          str
+    type:        Literal["update_title_block"] = "update_title_block"
+    title_block: TitleBlockFields
+
+
+class ExportFileConfig(BaseModel):
+    format:            Literal["PDF", "DXF", "STEP", "IGES", "STL"]
+    output_path:       Optional[str] = None
+    filename_template: Optional[str] = None
+
+
+class ExportFileOp(BaseModel):
+    id:          str
+    type:        Literal["export_file"] = "export_file"
+    export_file: ExportFileConfig
+
+
+class CheckDrawingOp(BaseModel):
+    id:   str
+    type: Literal["check_drawing"] = "check_drawing"
+
+
 Operation = Annotated[
     Union[
         CreatePartOp, CreateSketchOp, AddCenterRectangleOp, AddCirclesOp,
@@ -473,6 +506,7 @@ Operation = Annotated[
         FilletOp, ChamferOp, HoleWizardOp,
         CircularPatternOp, LinearPatternOp, MirrorOp,
         RevolveOp, DeleteFeatureOp, NoopOp,
+        UpdateTitleBlockOp, ExportFileOp, CheckDrawingOp,
     ],
     Field(discriminator="type"),
 ]

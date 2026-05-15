@@ -71,6 +71,29 @@ namespace SwCopilotAddin.Client
 
         // ── noop ──────────────────────────────────────────────────────────────
         [JsonProperty("message")] public string? Message { get; set; }
+
+        // ── update_title_block ────────────────────────────────────────────────
+        [JsonProperty("title_block")] public TitleBlockFieldsDto? TitleBlock { get; set; }
+
+        // ── export_file ───────────────────────────────────────────────────────
+        [JsonProperty("export_file")] public ExportFileDto? ExportFile { get; set; }
+    }
+
+    public sealed class TitleBlockFieldsDto
+    {
+        [JsonProperty("revision")]    public string? Revision    { get; set; }
+        [JsonProperty("drawn_by")]    public string? DrawnBy     { get; set; }
+        [JsonProperty("checked_by")] public string? CheckedBy   { get; set; }
+        [JsonProperty("title")]      public string? Title       { get; set; }
+        [JsonProperty("date")]       public string? Date        { get; set; }
+        [JsonProperty("custom")]     public System.Collections.Generic.Dictionary<string, string>? Custom { get; set; }
+    }
+
+    public sealed class ExportFileDto
+    {
+        [JsonProperty("format")]            public string? Format           { get; set; }
+        [JsonProperty("output_path")]       public string? OutputPath       { get; set; }
+        [JsonProperty("filename_template")] public string? FilenameTemplate { get; set; }
     }
 
     public sealed class SketchEntityDto
