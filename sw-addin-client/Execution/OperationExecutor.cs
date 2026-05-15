@@ -1396,12 +1396,12 @@ namespace SwCopilotAddin.Execution
 
             if (featureIds == null || featureIds.Length == 0)
             {
-                // "all edges" → walk solid bodies to get unique edge set
+                // "all edges" — IBody2.GetEdges() returns each edge exactly once;
+                // no deduplication needed when walking body edges directly.
                 IPartDoc? part = doc as IPartDoc;
                 object[]? bodies = part?.GetBodies2(
                     (int)swBodyType_e.swSolidBody, true) as object[];
                 if (bodies == null) return false;
-                var seen = new HashSet<IntPtr>();
                 foreach (object bodyObj in bodies)
                 {
                     IBody2? body = bodyObj as IBody2;
@@ -1410,11 +1410,6 @@ namespace SwCopilotAddin.Execution
                     if (edges == null) continue;
                     foreach (object edgeObj in edges)
                     {
-                        // Use COM identity pointer for deduplication
-                        IntPtr ptr = System.Runtime.InteropServices.Marshal
-                            .GetIUnknownForObject(edgeObj);
-                        System.Runtime.InteropServices.Marshal.Release(ptr);
-                        if (!seen.Add(ptr)) continue;
                         try {
                             ((IEntity)edgeObj).Select4(anySelected, null);
                             anySelected = true;
@@ -1424,19 +1419,19 @@ namespace SwCopilotAddin.Execution
             }
             else
             {
-                // Named features: walk their faces (existing logic)
-                foreach (string fid in featureIds)
+                // Named features: use body-based edge walk for the bodies those features belong to.
+                // Face-based walks produce duplicate edges (each edge borders two faces).
+                IPartDoc? part = doc as IPartDoc;
+                object[]? bodies = part?.GetBodies2((int)swBodyType_e.swSolidBody, true) as object[];
+                if (bodies != null)
                 {
-                    if (!_features.TryGetValue(fid, out Feature feat)) continue;
-                    object[]? faceArr = feat.GetFaces() as object[];
-                    if (faceArr == null) continue;
-                    foreach (object faceObj in faceArr)
+                    foreach (object bodyObj in bodies)
                     {
-                        Face2? face = faceObj as Face2;
-                        if (face == null) continue;
-                        object[]? edgeArr = face.GetEdges() as object[];
-                        if (edgeArr == null) continue;
-                        foreach (object edgeObj in edgeArr)
+                        IBody2? body = bodyObj as IBody2;
+                        if (body == null) continue;
+                        object[]? edges = body.GetEdges() as object[];
+                        if (edges == null) continue;
+                        foreach (object edgeObj in edges)
                         {
                             try {
                                 ((IEntity)edgeObj).Select4(anySelected, null);
