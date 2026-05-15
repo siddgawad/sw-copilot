@@ -1640,7 +1640,7 @@ namespace SwCopilotAddin.Execution
             }
         }
 
-        public static string ExtractPartCorpus(string folderPath, string outputPath = null)
+        public static string ExtractPartCorpus(string folderPath, string? outputPath = null)
         {
             // This would be the implementation for extracting SolidWorks feature corpus
             // For now, returning a placeholder
