@@ -293,5 +293,5 @@ def test_provider_router_reports_all_unavailable(monkeypatch):
 
     monkeypatch.setattr(agent, "_call_provider", fake_call)
 
-    with pytest.raises(RuntimeError, match="All LLM providers are unavailable"):
+    with pytest.raises(Exception, match="All LLM providers are unavailable"):
         agent._call_with_fallback([])

@@ -12,14 +12,14 @@ from agents.base_plate_v0 import (
     update_run_artifacts_after_validation,
     write_initial_run_artifacts,
 )
-from agents.macro_engineer import MacroEngineerAgent, try_fast_path_clarification
+from agents.macro_engineer import MacroEngineerAgent, ProviderQuotaError, try_fast_path_clarification
 from agents.rag_agent import RagAgent
 from agents.run_trace import make_trace_id, save_generate_trace, save_validation_trace
 from agents.validation_agent import validate as validate_graph_against_report
 from patterns.router import try_pattern_match
 from models.schemas import (
     DocumentContext, GenerateRequest, GenerateResponse,
-    IngestResponse, OperationGraph,
+    IngestResponse, NoopOp, OperationGraph,
     ValidateRequest, ValidationReport,
 )
 from config import settings
@@ -190,6 +190,29 @@ async def generate(req: GenerateRequest) -> GenerateResponse:
             rag_context,
             req.messages,
         )
+    except ProviderQuotaError:
+        # All configured providers hit quota. Return a friendly in-chat message
+        # instead of an HTTP error so the chat panel displays it naturally.
+        quota_msg = (
+            "SW Copilot can't reach an AI provider right now — all configured "
+            "providers are over their rate limit or quota.\n\n"
+            "To fix this:\n"
+            "• Add GROQ_API_KEY to agent-backend/.env (free at console.groq.com/keys)\n"
+            "• Or install Ollama (ollama.ai) and set LLM_FALLBACK_CHAIN=ollama in .env\n"
+            "• Then restart the backend (SwCopilotBackend.exe)\n\n"
+            "Note: fast-path commands (box, cylinder, shaft) never use AI and always work."
+        )
+        quota_graph = OperationGraph(
+            part_name=None,
+            missing_inputs=[],
+            assumptions=[],
+            operations=[NoopOp(id="quota1", message=quota_msg)],
+        )
+        return GenerateResponse(
+            operation_graph=quota_graph,
+            status_message="AI provider quota exhausted — see message for fix.",
+            rag_sources=[],
+        )
     except ValueError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -295,6 +318,31 @@ async def version() -> dict:
         "backend":     "sw-copilot-agent-backend",
         "groq_model":  settings.groq_model,
         "vector_docs": store.document_count,
+    }
+
+
+@app.get("/status")
+async def status() -> dict:
+    """Provider health check — no auth required so the add-in can display a
+    warning before the user even sends a message."""
+    providers_configured: list[str] = []
+    if settings.groq_api_key:
+        providers_configured.append("groq")
+    if settings.nim_api_key:
+        providers_configured.append("nim")
+    fallbacks = [p.strip() for p in settings.llm_fallback_chain.split(",") if p.strip()]
+    if "ollama" in fallbacks:
+        providers_configured.append("ollama (fallback)")
+    return {
+        "primary_provider": settings.llm_provider,
+        "fallback_chain":   settings.llm_fallback_chain or "(none configured)",
+        "providers_configured": providers_configured,
+        "groq_model":       settings.groq_model,
+        "fast_paths":       ["box", "cylinder", "shaft", "gear", "base_plate", "help"],
+        "tip": (
+            "Fast-path operations (box, cylinder, shaft, etc.) never call the AI provider "
+            "and always work regardless of quota state."
+        ),
     }
 
 

@@ -613,8 +613,12 @@ def build_system_prompt(
     return prompt
 
 
-class _ProviderQuotaError(Exception):
-    """Provider hit its rate/quota limit — caller should try the next provider."""
+class ProviderQuotaError(Exception):
+    """All configured LLM providers hit quota/rate limit. Surfaced to callers so
+    they can return a user-friendly chat message instead of an HTTP error."""
+
+# Internal alias kept so references inside this module are unchanged.
+_ProviderQuotaError = ProviderQuotaError
 
 
 def _safe_provider_text(text: str | None, limit: int = 500) -> str:
@@ -725,9 +729,10 @@ class MacroEngineerAgent:
             except _ProviderQuotaError as exc:
                 last_quota_error = exc
                 continue
-        raise RuntimeError(
-            f"All LLM providers are unavailable or over quota. "
-            f"Tried: {providers}. Last error: {last_quota_error}"
+        tried = ", ".join(providers)
+        raise ProviderQuotaError(
+            f"All LLM providers are unavailable or over quota (tried: {tried}). "
+            f"Last error: {last_quota_error}"
         ) from last_quota_error
 
     def generate(
