@@ -7,6 +7,7 @@ from models.schemas import (
     ExportFileOp,
     CheckDrawingOp,
     OperationGraph,
+    PartSketchInfo,
 )
 
 
@@ -55,3 +56,8 @@ def test_operation_graph_with_new_ops():
     )
     assert len(graph.operations) == 2
     assert graph.schema_version == "0.2"
+
+
+def test_part_sketch_info_accepts_dimension_count():
+    sketch = PartSketchInfo(name="base_profile", entity_count=4, dimension_count=2)
+    assert sketch.dimension_count == 2

@@ -56,6 +56,7 @@ def match(prompt: str) -> Optional[tuple[float, float]]:
 def build_graph(radius: float, length: float) -> OperationGraph:
     return OperationGraph(
         schema_version="0.2",
+        part_family="cylinder_v0",
         part_name="cylinder",
         reasoning=f"Deterministic cylinder fast path: r={radius} mm, l={length} mm",
         operations=[

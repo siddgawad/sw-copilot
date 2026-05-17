@@ -85,6 +85,7 @@ namespace SwCopilotAddin.Client
         [JsonProperty("drawn_by")]    public string? DrawnBy     { get; set; }
         [JsonProperty("checked_by")] public string? CheckedBy   { get; set; }
         [JsonProperty("title")]      public string? Title       { get; set; }
+        [JsonProperty("description")] public string? Description { get; set; }
         [JsonProperty("date")]       public string? Date        { get; set; }
         [JsonProperty("custom")]     public System.Collections.Generic.Dictionary<string, string>? Custom { get; set; }
     }

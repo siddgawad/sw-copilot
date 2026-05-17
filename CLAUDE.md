@@ -6,6 +6,10 @@
 For settled task history see `docs/CHANGELOG.md`.
 For SW COM signatures see `docs/SOLIDWORKS_API_REFERENCE.md`.
 For agent routing and the local-agent task-card contract see `docs/AGENT_PLAYBOOK.md`.
+For the full SolidWorks part-feature roadmap see
+`docs/SOLID_PART_FEATURE_COVERAGE_PLAN.md`.
+For the current Codex/Sonnet live-failure fix plan see
+`docs/CODEX_LIVE_FAILURE_FIX_PLAN_2026-05-16.md`.
 
 ---
 
@@ -257,6 +261,37 @@ Routing for the next build wave:
 ## Handoff Queue
 *Both agents check this section at the start of every session. Cross items
 off when done. Settled items move to `docs/CHANGELOG.md`.*
+
+- [ ] **[Codex -> Claude]** SW-LIVE-BOX-HOLES-CHAMFER-001:
+  Codex patched the exact failures from the user's live test. Deterministic
+  `box_v0` now handles `50mm x 40mm x 30mm box`; the add-in sends active
+  `bounding_box_mm`; backend `followup_feature_v0` handles corner holes,
+  top chamfers, and fillets without LLM calls; executor resolves stale
+  `f1 top` references via feature-name/body-top fallback; top-edge selection
+  uses `__top_edges__`; counterbores are two-stage clearance + pocket cuts.
+  Tests: backend `260 passed`; add-in verification
+  `dotnet build sw-addin-client\SwCopilotAddin.csproj /p:RegisterForComInterop=false`
+  -> `0 Warning(s), 0 Error(s)`. Claude next: rebuild/reinstall, run the
+  three live prompts in `docs/CODEX_LIVE_FAILURE_FIX_PLAN_2026-05-16.md`,
+  and report whether counterbore blind cuts go into the body.
+
+- [ ] **[Codex -> Claude]** SW-SKETCH-DIMS-001: Smart Dimension foundation
+  added for primitive sketches. `add_center_rectangle` now attempts explicit
+  horizontal/vertical Smart Dimensions, an origin coincident relation, and a
+  `SketchManager.FullyDefineSketch` cleanup pass. `add_circles` now attempts
+  diameter Smart Dimensions plus circle-center definition dimensions/relations
+  before the same cleanup pass. Generic `sketch` operations now run
+  `FullyDefineSketch` before close, and `hole_wizard` fallback sketches now
+  dimension hole diameters/centers before cutting. `ExtractPartReport()` reports
+  `dimension_count` for each sketch, and backend `PartSketchInfo` accepts it.
+  Validation done so far: C# build `0 Warning(s), 0 Error(s)`. Live SolidWorks
+  verification still required: create box, cylinder, and base plate with holes;
+  open sketches; confirm they are black/fully defined and dimensions are
+  editable driving dimensions rather than driven clutter. If hole sketches are
+  over-defined, Claude/Codex should tune the auto-define pass for circle arrays.
+  Attempted PowerShell COM smoke test on 2026-05-16 failed before execution with
+  `TYPE_E_ELEMENTNOTFOUND` on `SldWorks.Application` automation calls; use the
+  real add-in UI or a checked-in harness for the next live test.
 
 - [ ] **[Codex -> Claude]** Live test results (C-3): record pass/fail in
   the live testing section above for each remaining op type. If any

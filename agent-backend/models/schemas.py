@@ -6,11 +6,18 @@ from pydantic import BaseModel, Field, model_validator
 
 # ── Request / context types ───────────────────────────────────────────────────
 
+class BoundingBox(BaseModel):
+    x_mm: float
+    y_mm: float
+    z_mm: float
+
+
 class DocumentContext(BaseModel):
     document_type: str       = Field("None", description="Part | Assembly | Drawing | None")
     body_count:    int       = 0
     selected_ids:  list[str] = Field(default_factory=list)
     file_path:     str       = ""
+    bounding_box_mm: Optional[BoundingBox] = None
 
 
 class ConversationMessage(BaseModel):
@@ -553,12 +560,6 @@ class IngestResponse(BaseModel):
 
 # ── Post-execution part report (mirrors C# OperationExecutor.ExtractPartReport) ─
 
-class BoundingBox(BaseModel):
-    x_mm: float
-    y_mm: float
-    z_mm: float
-
-
 class PartFeatureInfo(BaseModel):
     name:       str
     type:       str
@@ -568,6 +569,7 @@ class PartFeatureInfo(BaseModel):
 class PartSketchInfo(BaseModel):
     name:         str
     entity_count: Optional[int] = None
+    dimension_count: Optional[int] = None
 
 
 class PartReport(BaseModel):

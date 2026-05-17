@@ -3,6 +3,8 @@ import pytest
 from agents.box_v0 import match as box_match, try_generate as box_try
 from agents.cylinder_v0 import match as cyl_match, try_generate as cyl_try
 from agents.help_v0 import match as help_match, try_generate as help_try
+from models.schemas import BoundingBox, DocumentContext
+from patterns.followup_features import try_generate as followup_try
 
 
 # ── help_v0 ────────────────────────────────────────────────────────────────────
@@ -35,7 +37,10 @@ def test_help_graph_is_noop():
 @pytest.mark.parametrize("prompt,expected", [
     ("50mm wide 30mm deep 20mm tall box",        (50, 30, 20)),
     ("100x60x40mm block",                         (100, 60, 40)),
+    ("create a 50mm x 40mm x 30mm box",           (50, 40, 30)),
+    ("create a 50 mm x 40 mm x 30 mm box",        (50, 40, 30)),
     ("50 by 30 by 20 rectangular block",          (50, 30, 20)),
+    ("50mm by 30mm by 20mm rectangular block",    (50, 30, 20)),
     ("create a 80mm wide 40mm deep 25mm tall box", (80, 40, 25)),
     ("200mm wide 100mm deep 50mm tall rectangular block", (200, 100, 50)),
 ])
@@ -58,6 +63,7 @@ def test_box_no_match(prompt):
 def test_box_graph_structure():
     graph = box_try("100x60x40mm block")
     assert graph is not None
+    assert graph.part_family == "box_v0"
     types = [op.type for op in graph.operations]
     assert "create_part" in types
     assert "create_sketch" in types
@@ -105,6 +111,7 @@ def test_cyl_no_match(prompt):
 def test_cyl_graph_structure():
     graph = cyl_try("40mm diameter shaft 100mm long")
     assert graph is not None
+    assert graph.part_family == "cylinder_v0"
     types = [op.type for op in graph.operations]
     assert "create_part" in types
     assert "create_sketch" in types
@@ -119,3 +126,46 @@ def test_cyl_graph_dimensions():
     extrude_op = next(op for op in graph.operations if op.type == "extrude_boss")
     assert circle_op.circles[0].diameter == pytest.approx(60.0)
     assert extrude_op.depth_mm == pytest.approx(200.0)
+
+
+# ── follow-up feature matching ────────────────────────────────────────────────
+
+def test_followup_corner_counterbore_uses_active_bbox():
+    ctx = DocumentContext(
+        document_type="Part",
+        body_count=1,
+        bounding_box_mm=BoundingBox(x_mm=50, y_mm=40, z_mm=30),
+    )
+
+    graph = followup_try("add four M6 counterbore holes at the corners", ctx)
+
+    assert graph is not None
+    assert graph.part_family == "followup_feature_v0"
+    hole_op = next(op for op in graph.operations if op.type == "hole_wizard")
+    assert hole_op.face_of == "active_top_face"
+    assert hole_op.fastener_size == "M6"
+    assert hole_op.hole_type == "counterbore"
+    assert [(p.x_mm, p.y_mm) for p in hole_op.positions] == pytest.approx([
+        (-15, -10),
+        (15, -10),
+        (-15, 10),
+        (15, 10),
+    ])
+
+
+def test_followup_corner_holes_without_bbox_needs_context_not_llm():
+    graph = followup_try("add four M6 counterbore holes at the corners", DocumentContext(document_type="Part"))
+
+    assert graph is not None
+    assert graph.missing_inputs
+    assert graph.operations[0].type == "noop"
+
+
+def test_followup_top_chamfer_selects_top_edges():
+    graph = followup_try("add a 3mm chamfer on the top edges", DocumentContext(document_type="Part"))
+
+    assert graph is not None
+    assert graph.part_family == "followup_feature_v0"
+    chamfer = next(op for op in graph.operations if op.type == "chamfer")
+    assert chamfer.distance_mm == pytest.approx(3.0)
+    assert chamfer.feature_ids == ["__top_edges__"]
