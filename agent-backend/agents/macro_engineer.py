@@ -727,6 +727,11 @@ class MacroEngineerAgent:
         if not self._gemini_client:
             raise _ProviderQuotaError("Gemini not configured (no GEMINI_API_KEY)")
         from google.genai import types as _gtypes
+        try:
+            from google.genai.errors import ClientError as _GeminiClientError
+        except ImportError:
+            _GeminiClientError = None  # type: ignore[assignment,misc]
+
         system_text = ""
         history = []
         for msg in messages:
@@ -749,8 +754,12 @@ class MacroEngineerAgent:
             )
             return resp.text or ""
         except Exception as exc:
+            # Catch Gemini quota/rate errors — error text uses RESOURCE_EXHAUSTED (underscore)
+            # and the HTTP status code 429. Both are checked so neither spelling is missed.
+            if _GeminiClientError and isinstance(exc, _GeminiClientError) and getattr(exc, "status_code", 0) == 429:
+                raise _ProviderQuotaError(f"Gemini quota/rate limit: {exc}") from exc
             msg_lower = str(exc).lower()
-            if any(k in msg_lower for k in ("quota", "rate", "429", "resource exhausted")):
+            if any(k in msg_lower for k in ("quota", "rate", "429", "resource_exhausted", "resource exhausted")):
                 raise _ProviderQuotaError(f"Gemini quota/rate limit: {exc}") from exc
             raise
 
