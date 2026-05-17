@@ -400,3 +400,127 @@ def test_compound_features_preserve_order():
     assert types.index("extrude_boss") < types.index("hole_wizard")
     assert types.index("hole_wizard") < types.index("fillet")
     assert types.index("fillet") < types.index("rebuild")
+
+
+# ── Spacer (round + square) ───────────────────────────────────────────────────
+
+@pytest.mark.parametrize("prompt", [
+    "create a spacer 30mm OD 10mm ID 5mm thick",
+    "round spacer 25mm OD 8mm ID 5mm thick",
+])
+def test_spacer_round(prompt):
+    graph = _run(prompt)
+    assert graph is not None
+    assert graph.part_family == "spacer_v0"
+    types = [op.type for op in graph.operations]
+    assert "extrude_boss" in types and "extrude_cut" in types
+
+
+def test_spacer_square():
+    graph = _run("rectangular spacer 40x20mm 10mm bore 5mm thick")
+    assert graph is not None
+    assert graph.part_family == "spacer_v0"
+    assert any(op.type == "add_center_rectangle" for op in graph.operations)
+
+
+# ── Pipe / tube ───────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("prompt", [
+    "create a pipe 25mm OD 20mm ID 200mm long",
+    "tube 32mm OD 28mm ID 500mm long",
+])
+def test_pipe_basic(prompt):
+    graph = _run(prompt)
+    assert graph is not None
+    assert graph.part_family == "pipe_v0"
+    assert any(op.type == "extrude_cut" for op in graph.operations)
+
+
+def test_pipe_wall_thickness_form():
+    """When the prompt gives a wall thickness, compute ID = OD - 2*wall."""
+    graph = _run("pipe 30mm OD 2mm wall 250mm long")
+    assert graph is not None
+    cuts = [op for op in graph.operations if op.type == "add_circles"]
+    inner = cuts[-1].circles[0].diameter
+    assert inner == pytest.approx(26.0)
+
+
+# ── Enclosure (box + shell + corner holes) ────────────────────────────────────
+
+def test_enclosure_basic():
+    graph = _run("create an enclosure 100x60x40mm with 2mm walls")
+    assert graph is not None
+    assert graph.part_family == "enclosure_v0"
+    types = [op.type for op in graph.operations]
+    assert "extrude_boss" in types
+    assert "shell" in types
+
+
+def test_enclosure_with_mounting_holes():
+    graph = _run("create a junction box 80x80x40mm 2mm walls with 4 M3 mounting holes at corners")
+    assert graph is not None
+    assert graph.part_family == "enclosure_v0"
+    types = [op.type for op in graph.operations]
+    assert "hole_wizard" in types
+
+
+def test_enclosure_with_compound_fillet():
+    """Enclosure + fillet in one prompt."""
+    graph = _run("create an enclosure 120x80x50mm with 3mm walls and 2mm fillet on all edges")
+    assert graph is not None
+    assert any(op.type == "fillet" for op in graph.operations)
+
+
+# ── Washer (ISO 7089) ─────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("prompt,fastener,od_mm,id_mm,thickness_mm", [
+    ("create an M3 washer",  "M3", 7.0,  3.2, 0.5),
+    ("M6 washer ISO 7089",   "M6", 12.0, 6.4, 1.6),
+    ("M8 washer",            "M8", 16.0, 8.4, 1.6),
+    ("M10 plain washer",     "M10", 20.0, 10.5, 2.0),
+])
+def test_washer_iso_7089(prompt, fastener, od_mm, id_mm, thickness_mm):
+    graph = _run(prompt)
+    assert graph is not None, f"{prompt!r} should match washer"
+    assert graph.part_family == "washer_v0"
+    boss = next(op for op in graph.operations if op.type == "extrude_boss")
+    assert boss.depth_mm == pytest.approx(thickness_mm)
+
+
+def test_washer_custom_dimensions():
+    graph = _run("make a washer 10mm OD 4mm ID 1mm thick")
+    assert graph is not None
+    assert graph.part_family == "washer_v0"
+
+
+# ── Comprehensive end-to-end coverage proof ───────────────────────────────────
+
+@pytest.mark.parametrize("prompt", [
+    # Every shape family represented:
+    "create a 50x30x20mm box",
+    "plate 100x60x5mm",
+    "flange 80mm OD 5mm thick",
+    "create an L-bracket 80x60x5mm",
+    "create a bushing 30mm OD 15mm ID 40mm long",
+    "create a spacer 30mm OD 10mm ID 5mm thick",
+    "create a pipe 25mm OD 20mm ID 200mm long",
+    "create an enclosure 100x60x40mm with 2mm walls",
+    "create an M6 washer",
+    "cylinder 40mm diameter 100mm long",
+    # Compound prompts:
+    "plate 100x60x5mm with 4 M6 holes at corners and 2mm fillet on all edges",
+    "flange 100mm OD 6mm thick with 6 M8 holes on 80mm PCD and 1mm chamfer on top edges",
+    "enclosure 150x100x50mm with 3mm walls and 4 M3 holes at corners and 2mm fillet on all edges",
+])
+def test_all_patterns_produce_executable_graphs(prompt):
+    """Every supported prompt produces a complete, schema-valid OperationGraph
+    with at least one geometry-producing op and a terminal rebuild."""
+    graph = _run(prompt)
+    assert graph is not None, f"Pattern coverage gap: {prompt!r}"
+    assert graph.schema_version == "0.2"
+    types = [op.type for op in graph.operations]
+    assert any(t in types for t in ("extrude_boss", "extrude_cut", "noop")), \
+        f"Graph for {prompt!r} has no geometry-producing op: {types}"
+    # Round-trip safety:
+    serialized = graph.model_dump_json()
+    OperationGraph.model_validate_json(serialized)

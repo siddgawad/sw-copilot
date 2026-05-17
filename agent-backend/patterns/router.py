@@ -15,23 +15,31 @@ from agents.cylinder_v0 import try_generate as try_generate_cylinder
 from agents.help_v0 import try_generate as try_generate_help
 from patterns.bracket import try_generate as try_generate_bracket
 from patterns.bushing import try_generate as try_generate_bushing
+from patterns.enclosure import try_generate as try_generate_enclosure
 from patterns.flange import try_generate as try_generate_flange
 from patterns.followup_features import try_generate as try_generate_followup_features
 from patterns.gear import try_generate_gear
+from patterns.pipe import try_generate as try_generate_pipe
 from patterns.plate import try_generate as try_generate_plate
 from patterns.shaft import try_generate_shaft
+from patterns.spacer import try_generate as try_generate_spacer
+from patterns.washer import try_generate as try_generate_washer
 
 _CONTEXT_HANDLERS = [
     try_generate_followup_features,
 ]
 
 _HANDLERS = [
-    try_generate_help,     # must be first — greetings/help before geometry parsers
-    try_generate_gear,     # gear teeth math — very specific keyword set
-    try_generate_bracket,  # L/angle bracket
-    try_generate_bushing,  # cylinder + concentric bore
-    try_generate_flange,   # circular disk + bolt circle — try before cylinder
-    try_generate_plate,    # flat rectangular plate — try before box (more specific)
+    try_generate_help,      # must be first — greetings/help before geometry parsers
+    try_generate_gear,      # gear teeth math — very specific keyword set
+    try_generate_washer,    # ISO 7089 standard part — very specific keyword
+    try_generate_enclosure, # box + shell + holes — very specific keyword
+    try_generate_bracket,   # L/angle bracket
+    try_generate_bushing,   # cylinder + concentric bore
+    try_generate_pipe,      # long thin hollow cylinder
+    try_generate_spacer,    # short spacer with center hole (round or square)
+    try_generate_flange,    # circular disk + bolt circle — try before cylinder
+    try_generate_plate,     # flat rectangular plate — try before box (more specific)
     try_generate_shaft,
     try_generate_box,
     try_generate_cylinder,

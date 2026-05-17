@@ -33,8 +33,11 @@ def try_generate(prompt: str, context: Optional[DocumentContext] = None) -> Oper
     return None
 
 
-_NEW_SHAPE_KEYWORDS = ("plate", "box", "block", "flange", "disc", "disk", "bracket",
-                       "shaft", "cylinder", "bushing", "spacer", "gear")
+_NEW_SHAPE_KEYWORDS = (
+    "plate", "box", "block", "flange", "disc", "disk", "bracket", "shaft",
+    "cylinder", "bushing", "spacer", "gear", "washer", "pipe", "tube",
+    "enclosure", "housing", "case", "chassis", "cabinet",
+)
 
 
 def _try_corner_holes(prompt: str, context: Optional[DocumentContext]) -> OperationGraph | None:
