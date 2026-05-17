@@ -182,6 +182,13 @@ def test_validator_fails_when_hole_sketch_count_differs():
 
 
 def test_generate_base_plate_does_not_require_initialised_llm_agents(tmp_path, monkeypatch):
+    """Plate prompts route through the deterministic pattern router — no LLM.
+
+    Legacy base_plate_v0 intercept was removed (it returned wrong dims and
+    blocked the better patterns/plate.py router). design_spec /
+    coordinate_plan / sketch_graph are no longer surfaced on this path; the
+    invariant we still care about is "no LLM call required".
+    """
     monkeypatch.setenv("SW_COPILOT_RUNS_DIR", str(tmp_path))
     response = asyncio.run(generate(GenerateRequest(
         prompt="make a 120x80x10mm base plate with four 6mm holes 10mm from corners",
@@ -189,10 +196,6 @@ def test_generate_base_plate_does_not_require_initialised_llm_agents(tmp_path, m
     )))
 
     assert response.operation_graph is not None
-    assert response.design_spec is not None
-    assert response.coordinate_plan is not None
-    assert response.sketch_graph is not None
-    assert response.trace_id
     assert "no LLM call required" in response.status_message
 
 

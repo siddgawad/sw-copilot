@@ -8,11 +8,7 @@ from pydantic import BaseModel
 from groq import APIConnectionError, APIError, APIStatusError, APITimeoutError
 from starlette.concurrency import run_in_threadpool
 
-from agents.base_plate_v0 import (
-    try_compile_base_plate_v0,
-    update_run_artifacts_after_validation,
-    write_initial_run_artifacts,
-)
+from agents.base_plate_v0 import update_run_artifacts_after_validation
 from agents.macro_engineer import MacroEngineerAgent, ProviderQuotaError, try_fast_path_clarification
 from agents.rag_agent import RagAgent
 from agents.run_trace import make_trace_id, save_generate_trace, save_validation_trace
@@ -124,33 +120,12 @@ async def generate(req: GenerateRequest) -> GenerateResponse:
     2. Passes the enriched prompt to the Macro Engineer Agent/provider router.
     3. Returns a validated OperationGraph JSON object to the Add-in.
     """
-    base_plate = try_compile_base_plate_v0(req.prompt)
-    if base_plate is not None:
-        trace_id, run_dir = write_initial_run_artifacts(req.prompt, base_plate)
-        has_missing = bool(base_plate.operation_graph.missing_inputs)
-        return GenerateResponse(
-            macro_code=None,
-            cad_command=None,
-            operation_graph=base_plate.operation_graph,
-            design_spec=base_plate.design_spec,
-            coordinate_plan=base_plate.coordinate_plan,
-            sketch_graph=base_plate.sketch_graph,
-            trace_id=trace_id,
-            run_artifact_path=str(run_dir),
-            status_message=(
-                "Unsupported base_plate_v0 request — see missing inputs."
-                if has_missing
-                else "base_plate_v0 deterministic plan ready — no LLM call required."
-            ),
-            rag_sources=[],
-        )
-
-    if macro_agent is None or rag_agent is None:
-        raise HTTPException(status_code=503, detail="Agents not yet initialised.")
-
     sanitized_context = _sanitize_context(req.context)
 
     # ── Deterministic pattern library (runs before any LLM call) ─────────────
+    # Pure pattern routing must NOT depend on LLM agent initialisation. This
+    # guarantees that deterministic prompts (box, plate, flange, etc.) always
+    # work — even if all LLM providers are unreachable or unconfigured.
     pattern_graph = try_pattern_match(req.prompt, sanitized_context)
     if pattern_graph is not None:
         has_missing = bool(pattern_graph.missing_inputs)
@@ -169,6 +144,9 @@ async def generate(req: GenerateRequest) -> GenerateResponse:
             ),
             rag_sources=[],
         )
+
+    if macro_agent is None or rag_agent is None:
+        raise HTTPException(status_code=503, detail="Agents not yet initialised.")
 
     fast_path_graph = try_fast_path_clarification(req.prompt, req.messages)
     if fast_path_graph is not None:

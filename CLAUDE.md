@@ -262,6 +262,65 @@ Routing for the next build wave:
 *Both agents check this section at the start of every session. Cross items
 off when done. Settled items move to `docs/CHANGELOG.md`.*
 
+- [ ] **[Claude -> Codex]** LIVE-BUGS-2026-05-17: User ran live tests and
+  found multiple stupid-error issues. Claude fixed the routing bug (see
+  below); remaining items need C# work from Codex.
+
+  **Done by Claude (backend, this session):**
+  Removed the `try_compile_base_plate_v0` intercept from `main.py:/generate`.
+  The legacy `base_plate_v0` parser was intercepting all "plate" prompts
+  before `patterns/plate.py` could run — that's why plates extruded to 20mm
+  instead of the requested 5mm, and why "plate ... with 4 M6 holes at corners"
+  was rejected with "supports exactly four holes". The new `patterns/plate.py`
+  router now wins. Also reordered: deterministic pattern matching now runs
+  BEFORE the agent-init check, so plates/boxes/etc. work even if LLM agents
+  aren't initialised. Backend tests: 371 passed.
+
+  **For Codex (C# OperationExecutor):**
+
+  1. **`delete_feature` cannot find sketches by name.** Live test:
+     ```
+     You: delete sketch 3
+     Agent: [d1] No deletable features found.
+     ```
+     But `Sketch3` exists in the feature tree report. The C# `ExecDeleteFeature`
+     must walk `IModelDoc2.FirstFeature()` -> `f.GetNextFeature()`, match
+     `f.Name` case-insensitively against the requested name (`Sketch3`,
+     `sketch 3`, `Sketch_3`), then `SelectByName` + `EditDelete`. Also
+     accept "delete all sketches" -> delete every ProfileFeature.
+
+  2. **Hole-cut still failing on corner counterbore.** Live test (after
+     plate 100x60x5mm):
+     ```
+     You: m6 counterbore near corners ... one for each corner
+     [h1] ERROR: Hole cut failed
+     ```
+     C# executor returns null from FeatureCut3. Possible causes:
+     - Sketch plane resolution after the new `BasePlate_Extrude` feature
+     - Counterbore order (pocket first, then clearance through-hole)
+     - Through-all flag on a plate only 5mm thick (try blind 5mm if too thin)
+
+  3. **Cross-turn conversation context lost.** Live test:
+     ```
+     You: m6 counterbore near corners
+     Agent: number of holes; say four/4 for all corners
+     You: one for each corner       <- merges with prior turn
+     [graph emitted, but executor fails]
+     You: place 10mm radial from corners
+     Agent: number of holes; ...    <- LOST the M6 + "one per corner" context!
+     ```
+     Verify `TaskPaneHost._history` is sent on every /generate call and that
+     the backend's followup parser reads `req.messages[]` to merge partial
+     specs across turns.
+
+  4. **Plate now works on the new router** — Codex should re-test after
+     rebuilding:
+     - `create a 100x60x5mm plate` -> bbox 100x60x5 (NOT 100x60x20)
+     - `plate 100x60x5mm with 4 M6 holes at corners` -> 4 corner holes
+     - `plate 100x60x5mm with 4 M6 counterbored holes at corners and 2mm fillet on all edges`
+       -> compound graph in a single response
+
+
 - [ ] **[Claude -> Codex]** DETERMINISTIC-COMPILER-V1 (2026-05-17): Backend
   is now a deterministic NL→OperationGraph compiler that covers most common
   engineering requests with zero LLM calls. New patterns shipped:
