@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -1124,13 +1124,81 @@ namespace SwCopilotAddin.Execution
             double radius = Mm(op.RadiusMm);
             if (radius <= 0) return "ERROR: fillet radius_mm must be positive";
 
+            if ((op.FeatureIds == null || op.FeatureIds.Length == 0) &&
+                TryGetPartThicknessMm(doc, out double thicknessMm))
+            {
+                double maxRadiusMm = (thicknessMm / 2.0) - 0.01;
+                if (maxRadiusMm > 0.0 && (op.RadiusMm ?? 0.0) > maxRadiusMm)
+                {
+                    double suggested = Math.Round(maxRadiusMm * 0.8, 1);
+                    if (suggested < 0.5) suggested = 0.5;
+                    return $"ERROR: Fillet radius {(op.RadiusMm ?? 0.0):0.###} mm is too large. " +
+                           $"Part thickness is {thicknessMm:0.###} mm, so maximum fillet radius is {maxRadiusMm:0.#} mm. " +
+                           $"Try: 'fillet all edges {suggested:0.#}mm'";
+                }
+            }
+
             doc.ClearSelection2(true);
 
-            bool anySelected = SelectEdgesForFillet(doc, op.FeatureIds);
+            string[] featureIds = op.FeatureIds ?? System.Array.Empty<string>();
+            bool anySelected = SelectEdgesForFillet(doc, featureIds);
             if (!anySelected) return "ERROR: No edges found to fillet";
 
+            Feature? fillet = CreateSimpleFillet(doc, radius);
+
+            if (fillet == null)
+            {
+                double minEdgeLengthMm = (op.RadiusMm ?? 0.0) * 2.0;
+                doc.ClearSelection2(true);
+                bool selectedFiltered = SelectEdgesForFillet(doc, featureIds, minEdgeLengthMm);
+                if (selectedFiltered)
+                    fillet = CreateSimpleFillet(doc, radius);
+            }
+
+            double? reducedRadiusMm = null;
+            if (fillet == null && TryGetPartThicknessMm(doc, out double retryThickness))
+            {
+                double maxSafeMm = (retryThickness / 2.0) - 0.01;
+                if (maxSafeMm > 0.0)
+                {
+                    reducedRadiusMm = Math.Round(maxSafeMm * 0.6, 1);
+                    if (reducedRadiusMm < 0.5) reducedRadiusMm = 0.5;
+                    if (reducedRadiusMm < (op.RadiusMm ?? 0.0))
+                    {
+                        double reducedRadius = Mm(reducedRadiusMm.Value);
+                        doc.ClearSelection2(true);
+                        bool selectedReduced = SelectEdgesForFillet(doc, featureIds, reducedRadiusMm.Value * 2.0);
+                        if (selectedReduced)
+                            fillet = CreateSimpleFillet(doc, reducedRadius);
+                    }
+                }
+            }
+
+            if (fillet == null)
+            {
+                // Try to give a useful suggestion based on what we know
+                string suggestion = "";
+                if (TryGetPartThicknessMm(doc, out double fallbackThickness))
+                {
+                    double safeMm = Math.Round((fallbackThickness / 2.0) * 0.6, 1);
+                    if (safeMm < 0.5) safeMm = 0.5;
+                    suggestion = $" Part thickness is {fallbackThickness:0.#} mm. Try: 'fillet all edges {safeMm:0.#}mm'";
+                }
+                return $"ERROR: Fillet failed — some edges are incompatible with R={op.RadiusMm:0.#} mm.{suggestion}";
+            }
+
+            RegisterFeature(op.Id, fillet);
+            if (reducedRadiusMm.HasValue)
+            {
+                return $"Fillet R={reducedRadiusMm.Value:0.#} mm (reduced from {op.RadiusMm:0.#} mm — some edges incompatible)";
+            }
+            return $"Fillet R={op.RadiusMm:0.#} mm";
+        }
+
+        private static Feature? CreateSimpleFillet(IModelDoc2 doc, double radius)
+        {
             // FeatureFillet(Options, R1, Ftyp, OverflowType, Radii, SetBackDistances, PointRadiusArray)
-            Feature? fillet = (Feature)doc.FeatureManager.FeatureFillet(
+            return (Feature?)doc.FeatureManager.FeatureFillet(
                 (int)swFeatureFilletOptions_e.swFeatureFilletUniformRadius,
                 radius,                  // R1
                 (int)swFeatureFilletType_e.swFeatureFilletType_Simple,
@@ -1138,11 +1206,6 @@ namespace SwCopilotAddin.Execution
                 new object[] { radius }, // Radii
                 new object[] { },        // SetBackDistances
                 new object[] { });       // PointRadiusArray
-
-            if (fillet == null) return "ERROR: Fillet failed — try specifying only external edges or a smaller radius";
-
-            RegisterFeature(op.Id, fillet);
-            return $"Fillet R={op.RadiusMm:0.#} mm";
         }
 
         // ── chamfer ───────────────────────────────────────────────────────────
@@ -1152,9 +1215,23 @@ namespace SwCopilotAddin.Execution
             double dist = Mm(op.DistanceMm);
             if (dist <= 0) return "ERROR: chamfer distance_mm must be positive";
 
+            if ((op.FeatureIds == null || op.FeatureIds.Length == 0) &&
+                TryGetPartThicknessMm(doc, out double thicknessMm))
+            {
+                double maxDistMm = (thicknessMm / 2.0) - 0.01;
+                if (maxDistMm > 0.0 && (op.DistanceMm ?? 0.0) > maxDistMm)
+                {
+                    double suggested = Math.Round(maxDistMm * 0.8, 1);
+                    if (suggested < 0.5) suggested = 0.5;
+                    return $"ERROR: Chamfer {(op.DistanceMm ?? 0.0):0.###} mm is too large. " +
+                           $"Part thickness is {thicknessMm:0.###} mm, max safe = {maxDistMm:0.#} mm. " +
+                           $"Try: 'chamfer all edges {suggested:0.#}mm'";
+                }
+            }
+
             doc.ClearSelection2(true);
 
-            bool anySelected = SelectEdgesForFillet(doc, op.FeatureIds);
+            bool anySelected = SelectEdgesForFillet(doc, op.FeatureIds ?? System.Array.Empty<string>(), (op.DistanceMm ?? 0.0) * 2.0);
             if (!anySelected) return "ERROR: No edges found to chamfer";
 
             // InsertFeatureChamfer(Options, ChamferType, Width, Angle, OtherDist, VChamDist1, VChamDist2, VChamDist3)
@@ -1195,8 +1272,35 @@ namespace SwCopilotAddin.Execution
             {
                 double counterboreDiameter = CounterboreDiameterMm(fastenerSize);
                 string? geometryError = ValidateHoleCutAgainstCurrentPart(
-                    doc, positions, counterboreDiameter, fastenerSize, holeType);
+                    doc, positions, counterboreDiameter, fastenerSize, holeType, faceOf);
                 if (geometryError != null) return geometryError;
+
+                double counterboreDepth = CounterboreDepthMm(fastenerSize);
+                if (TryGetPartThicknessMm(doc, out double thicknessMm) &&
+                    counterboreDepth >= thicknessMm - 0.01)
+                {
+                    double minThickness = counterboreDepth + 1.0;
+                    return $"ERROR: {fastenerSize} counterbore depth is {counterboreDepth:0.###} mm (ISO 4762), " +
+                           $"but part thickness is only {thicknessMm:0.###} mm. The counterbore would cut through the part. " +
+                           $"Try: use simple holes instead ('make {positions.Length} {fastenerSize} holes'), " +
+                           $"or increase plate thickness to at least {minThickness:0.#} mm.";
+                }
+
+                var counterboreDefinition = new SketchDefinitionResult();
+                for (int i = 0; i < positions.Length; i++)
+                {
+                    string counterboreFeatureId = i == 0 ? op.Id : $"{op.Id}_counterbore_{i + 1}";
+                    string? counterboreError = CreateCounterborePocketCut(
+                        doc,
+                        counterboreFeatureId,
+                        faceOf,
+                        positions[i],
+                        counterboreDiameter,
+                        counterboreDepth,
+                        out SketchDefinitionResult singleCounterboreDefinition);
+                    MergeDefinition(counterboreDefinition, singleCounterboreDefinition);
+                    if (counterboreError != null) return counterboreError;
+                }
 
                 string? clearanceError = CreateHoleCut(
                     doc,
@@ -1209,35 +1313,17 @@ namespace SwCopilotAddin.Execution
                     out SketchDefinitionResult clearanceDefinition);
                 if (clearanceError != null) return clearanceError;
 
-                double counterboreDepth = CounterboreDepthMm(fastenerSize);
-                var counterboreDefinition = new SketchDefinitionResult();
-                for (int i = 0; i < positions.Length; i++)
-                {
-                    string counterboreFeatureId = i == 0 ? op.Id : $"{op.Id}_counterbore_{i + 1}";
-                    string? counterboreError = CreateHoleCut(
-                        doc,
-                        counterboreFeatureId,
-                        faceOf,
-                        new[] { positions[i] },
-                        counterboreDiameter,
-                        throughAll: false,
-                        depthMm: counterboreDepth,
-                        out SketchDefinitionResult singleCounterboreDefinition);
-                    MergeDefinition(counterboreDefinition, singleCounterboreDefinition);
-                    if (counterboreError != null) return counterboreError;
-                }
-
                 return $"{positions.Length}x {fastenerSize} counterbore hole(s) " +
-                       $"(clearance dia {ClearanceHoleDiameterMm(fastenerSize):0.###} mm through, " +
-                       $"counterbore dia {counterboreDiameter:0.###} mm x {counterboreDepth:0.###} mm deep; " +
-                       $"clearance {clearanceDefinition.Summary()}; counterbore {counterboreDefinition.Summary()})";
+                       $"(counterbore dia {counterboreDiameter:0.###} mm x {counterboreDepth:0.###} mm deep, " +
+                       $"then clearance dia {ClearanceHoleDiameterMm(fastenerSize):0.###} mm through; " +
+                       $"counterbore {counterboreDefinition.Summary()}; clearance {clearanceDefinition.Summary()})";
             }
 
             bool thruAll = op.ThroughAll || (op.DepthMm ?? 0) <= 0;
             double depthMm = op.DepthMm ?? 0.0;
             double holeDiameter = HoleDiameterMm(fastenerSize, holeType);
             string? simpleGeometryError = ValidateHoleCutAgainstCurrentPart(
-                doc, positions, holeDiameter, fastenerSize, holeType);
+                doc, positions, holeDiameter, fastenerSize, holeType, faceOf);
             if (simpleGeometryError != null) return simpleGeometryError;
 
             string? cutError = CreateHoleCut(
@@ -1253,6 +1339,72 @@ namespace SwCopilotAddin.Execution
 
             string label = holeType == "simple" ? "drill" : holeType;
             return $"{positions.Length}x {fastenerSize} {label} hole(s) ({definition.Summary()})";
+        }
+
+        private string? CreateCounterborePocketCut(
+            IModelDoc2 doc,
+            string featureId,
+            string faceOf,
+            HolePositionDto position,
+            double outerDiameterMm,
+            double depthMm,
+            out SketchDefinitionResult definition)
+        {
+            definition = new SketchDefinitionResult();
+            HashSet<string> featureSnapshot = SnapshotFeatureNames(doc);
+            double outerRadius = outerDiameterMm / 2.0 / 1000.0; // to metres
+
+            try
+            {
+                bool planeReady = SelectHoleSketchReference(doc, faceOf);
+                if (!planeReady)
+                    return $"ERROR: Could not select sketch plane for holes (face_of='{faceOf}')";
+
+                SketchManager skMgr = doc.SketchManager;
+                skMgr.InsertSketch(true);
+
+                SketchSegment outer = skMgr.CreateCircleByRadius(position.XMm / 1000.0, position.YMm / 1000.0, 0, outerRadius);
+
+                if (TryAddDiameterSmartDimension(doc, outer, position.XMm, position.YMm, outerDiameterMm))
+                    definition.SmartDimensions++;
+
+                SketchDefinitionResult centerDefinition = TryDefineCircleCenter(doc, outer, position.XMm, position.YMm);
+                definition.SmartDimensions += centerDefinition.SmartDimensions;
+                definition.Relations += centerDefinition.Relations;
+
+                definition.FullyDefineStatus = TryFullyDefineActiveSketch(doc);
+                if (definition.FullyDefineStatus != 0)
+                    definition.Relations += TryFixActiveSketchSegments(doc);
+
+                skMgr.InsertSketch(true);
+
+                double depth = Mm(depthMm);
+                Feature? cut = doc.FeatureManager.FeatureCut3(
+                    true, false, false,
+                    (int)swEndConditions_e.swEndCondBlind,
+                    (int)swEndConditions_e.swEndCondBlind,
+                    depth, 0.0,
+                    false, false, false, false,
+                    0.0, 0.0,
+                    false, false, false, false,
+                    false, true, true, true, true, false,
+                    0, 0.0, false);
+
+                if (cut == null)
+                {
+                    DeleteFeaturesCreatedAfter(doc, featureSnapshot);
+                    return "ERROR: Hole cut failed";
+                }
+
+                RegisterFeature(featureId, cut);
+                doc.ForceRebuild3(false);
+                return null;
+            }
+            catch (Exception ex)
+            {
+                DeleteFeaturesCreatedAfter(doc, featureSnapshot);
+                return "ERROR: Hole cut failed: " + ex.Message;
+            }
         }
 
         private string? CreateHoleCut(
@@ -1335,7 +1487,8 @@ namespace SwCopilotAddin.Execution
             HolePositionDto[] positions,
             double cutDiameterMm,
             string fastenerSize,
-            string holeType)
+            string holeType,
+            string? faceOf = null)
         {
             const double minWebMm = 0.05;
             for (int i = 0; i < positions.Length; i++)
@@ -1354,11 +1507,38 @@ namespace SwCopilotAddin.Execution
                 }
             }
 
-            if (!TryGetPartXyBoundsMm(doc, out double xMin, out double yMin, out double xMax, out double yMax))
+            if (!TryGetCombinedBodyBoxMm(doc, out double[] boxMm))
                 return null;
 
+            SketchBoundsAxes preferredAxes = ResolveSketchBoundsAxes(faceOf, boxMm);
             double radius = cutDiameterMm / 2.0;
             const double toleranceMm = 0.01;
+
+            // Some templates/routers can reference an equivalent plane name with
+            // a different axis convention. Avoid false negatives by accepting any
+            // axis-pair that fully fits the requested local coordinates.
+            var axisCandidates = new[] { preferredAxes, SketchBoundsAxes.XY, SketchBoundsAxes.XZ, SketchBoundsAxes.YZ }
+                .Distinct()
+                .ToArray();
+
+            string boundsLabel = AxisLabel(preferredAxes);
+            GetBoundsForAxes(boxMm, preferredAxes, out double xMin, out double yMin, out double xMax, out double yMax);
+            bool anyCandidateFits = false;
+
+            foreach (SketchBoundsAxes axes in axisCandidates)
+            {
+                GetBoundsForAxes(boxMm, axes, out double cxMin, out double cyMin, out double cxMax, out double cyMax);
+                if (AllPositionsFitBounds(positions, radius, toleranceMm, cxMin, cyMin, cxMax, cyMax))
+                {
+                    anyCandidateFits = true;
+                    break;
+                }
+            }
+
+            if (anyCandidateFits)
+                return null;
+
+            // None of the axis conventions fit: return the preferred-axis error.
             for (int i = 0; i < positions.Length; i++)
             {
                 HolePositionDto pos = positions[i];
@@ -1369,7 +1549,7 @@ namespace SwCopilotAddin.Execution
                 {
                     return $"ERROR: Hole layout conflicts with current part bounds: position {i + 1} at " +
                            $"({pos.XMm:0.###}, {pos.YMm:0.###}) mm with {cutDiameterMm:0.###} mm cut " +
-                           $"does not fit inside current XY bounds [{xMin:0.###}, {xMax:0.###}] x " +
+                           $"does not fit inside current {boundsLabel} bounds [{xMin:0.###}, {xMax:0.###}] x " +
                            $"[{yMin:0.###}, {yMax:0.###}] mm.";
                 }
             }
@@ -1377,15 +1557,177 @@ namespace SwCopilotAddin.Execution
             return null;
         }
 
-        private static bool TryGetPartXyBoundsMm(
+        private enum SketchBoundsAxes
+        {
+            XY,
+            XZ,
+            YZ,
+        }
+
+        private static string AxisLabel(SketchBoundsAxes axes)
+        {
+            switch (axes)
+            {
+                case SketchBoundsAxes.XZ: return "XZ";
+                case SketchBoundsAxes.YZ: return "YZ";
+                default: return "XY";
+            }
+        }
+
+        private static bool AllPositionsFitBounds(
+            HolePositionDto[] positions,
+            double radius,
+            double toleranceMm,
+            double xMin,
+            double yMin,
+            double xMax,
+            double yMax)
+        {
+            for (int i = 0; i < positions.Length; i++)
+            {
+                HolePositionDto pos = positions[i];
+                if (pos.XMm - radius < xMin - toleranceMm ||
+                    pos.XMm + radius > xMax + toleranceMm ||
+                    pos.YMm - radius < yMin - toleranceMm ||
+                    pos.YMm + radius > yMax + toleranceMm)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static void GetBoundsForAxes(
+            double[] boxMm,
+            SketchBoundsAxes axes,
+            out double xMin,
+            out double yMin,
+            out double xMax,
+            out double yMax)
+        {
+            switch (axes)
+            {
+                case SketchBoundsAxes.XZ:
+                    xMin = boxMm[0];
+                    xMax = boxMm[3];
+                    yMin = boxMm[2];
+                    yMax = boxMm[5];
+                    return;
+                case SketchBoundsAxes.YZ:
+                    xMin = boxMm[1];
+                    xMax = boxMm[4];
+                    yMin = boxMm[2];
+                    yMax = boxMm[5];
+                    return;
+                default:
+                    xMin = boxMm[0];
+                    xMax = boxMm[3];
+                    yMin = boxMm[1];
+                    yMax = boxMm[4];
+                    return;
+            }
+        }
+
+        private static bool TryGetPartSketchPlaneBoundsMm(
+            IModelDoc2 doc,
+            string? faceOf,
+            out double xMin,
+            out double yMin,
+            out double xMax,
+            out double yMax,
+            out string boundsLabel)
+        {
+            xMin = yMin = xMax = yMax = 0.0;
+            boundsLabel = "XY";
+
+            if (!TryGetCombinedBodyBoxMm(doc, out double[] boxMm))
+                return false;
+
+            SketchBoundsAxes axes = ResolveSketchBoundsAxes(faceOf, boxMm);
+            switch (axes)
+            {
+                case SketchBoundsAxes.XZ:
+                    xMin = boxMm[0];
+                    xMax = boxMm[3];
+                    yMin = boxMm[2];
+                    yMax = boxMm[5];
+                    boundsLabel = "XZ";
+                    return true;
+                case SketchBoundsAxes.YZ:
+                    xMin = boxMm[1];
+                    xMax = boxMm[4];
+                    yMin = boxMm[2];
+                    yMax = boxMm[5];
+                    boundsLabel = "YZ";
+                    return true;
+                default:
+                    xMin = boxMm[0];
+                    xMax = boxMm[3];
+                    yMin = boxMm[1];
+                    yMax = boxMm[4];
+                    boundsLabel = "XY";
+                    return true;
+            }
+        }
+
+        private static SketchBoundsAxes ResolveSketchBoundsAxes(string? faceOf, double[] boxMm)
+        {
+            if (string.IsNullOrWhiteSpace(faceOf))
+                return SketchBoundsAxes.XY;
+
+            string value = faceOf!.Trim();
+
+            // Standard plane names: in-plane axes are fixed.
+            if (value.Equals("Top Plane", StringComparison.OrdinalIgnoreCase))
+                return SketchBoundsAxes.XZ;
+            if (value.Equals("Right Plane", StringComparison.OrdinalIgnoreCase))
+                return SketchBoundsAxes.YZ;
+            if (value.Equals("Front Plane", StringComparison.OrdinalIgnoreCase))
+                return SketchBoundsAxes.XY;
+
+            // active_top_face / "<feat> top" / "<feat> bottom" — the face's
+            // in-plane axes depend on the body's extrude direction. The
+            // extrude direction is the body's thinnest axis; the remaining
+            // two axes form the bounds plane.
+            if (value.Equals("active_top_face", StringComparison.OrdinalIgnoreCase) ||
+                value.EndsWith(" top", StringComparison.OrdinalIgnoreCase) ||
+                value.EndsWith(" bottom", StringComparison.OrdinalIgnoreCase))
+            {
+                double dx = boxMm[3] - boxMm[0];
+                double dy = boxMm[4] - boxMm[1];
+                double dz = boxMm[5] - boxMm[2];
+                if (dz <= dx && dz <= dy) return SketchBoundsAxes.XY; // +Z is top
+                if (dy <= dx && dy <= dz) return SketchBoundsAxes.XZ; // +Y is top
+                return SketchBoundsAxes.YZ;                            // +X is top
+            }
+
+            return SketchBoundsAxes.XY;
+        }
+
+        private static bool TryGetCombinedBodyBoxMm(
             IModelDoc2 doc,
             out double xMin,
             out double yMin,
             out double xMax,
             out double yMax)
         {
-            xMin = yMin = xMax = yMax = 0.0;
+            if (!TryGetCombinedBodyBoxMm(doc, out double[] boxMm))
+            {
+                xMin = yMin = xMax = yMax = 0.0;
+                return false;
+            }
 
+            xMin = boxMm[0];
+            yMin = boxMm[1];
+            xMax = boxMm[3];
+            yMax = boxMm[4];
+            return true;
+        }
+
+        private static bool TryGetCombinedBodyBoxMm(IModelDoc2 doc, out double[] boxMm)
+        {
+            boxMm = System.Array.Empty<double>();
             IPartDoc? part = doc as IPartDoc;
             object[]? bodies = part?.GetBodies2((int)swBodyType_e.swSolidBody, true) as object[];
             if (bodies == null || bodies.Length == 0)
@@ -1395,11 +1737,29 @@ namespace SwCopilotAddin.Execution
             if (box == null || box.Length < 6)
                 return false;
 
-            xMin = box[0] * 1000.0;
-            yMin = box[1] * 1000.0;
-            xMax = box[3] * 1000.0;
-            yMax = box[4] * 1000.0;
+            boxMm = new[]
+            {
+                box[0] * 1000.0,
+                box[1] * 1000.0,
+                box[2] * 1000.0,
+                box[3] * 1000.0,
+                box[4] * 1000.0,
+                box[5] * 1000.0,
+            };
             return true;
+        }
+
+        private static bool TryGetPartThicknessMm(IModelDoc2 doc, out double thicknessMm)
+        {
+            thicknessMm = 0.0;
+            if (!TryGetCombinedBodyBoxMm(doc, out double[] boxMm))
+                return false;
+
+            double dx = Math.Abs(boxMm[3] - boxMm[0]);
+            double dy = Math.Abs(boxMm[4] - boxMm[1]);
+            double dz = Math.Abs(boxMm[5] - boxMm[2]);
+            thicknessMm = Math.Min(dx, Math.Min(dy, dz));
+            return thicknessMm > 0.0;
         }
 
         // ── circular_pattern ─────────────────────────────────────────────────
@@ -1827,15 +2187,44 @@ namespace SwCopilotAddin.Execution
 
             if (op.FeatureIds != null && op.FeatureIds.Length > 0)
             {
-                // Delete by registered op ID or by SolidWorks feature name.
-                var nameSet = new HashSet<string>(op.FeatureIds, StringComparer.OrdinalIgnoreCase);
+                bool deleteAllSketches = op.FeatureIds.Any(IsAllSketchesRequest);
+                string[] requestedIds = op.FeatureIds;
+                var normalizedNames = new HashSet<string>(
+                    requestedIds
+                        .Select(NormalizeFeatureLookup)
+                        .Where(n => !string.IsNullOrEmpty(n)),
+                    StringComparer.OrdinalIgnoreCase);
+                int? requestedSketchNumber = requestedIds
+                    .Select(TryExtractSketchNumber)
+                    .FirstOrDefault(n => n.HasValue);
+
                 Feature f = (Feature)doc.FirstFeature();
                 while (f != null)
                 {
-                    if (nameSet.Contains(f.Name ?? "") ||
-                        op.FeatureIds.Any(id => _features.TryGetValue(id, out Feature reg) && reg == f))
-                        toDelete.Add(f);
-                    f = (Feature)f.GetNextFeature();
+                    string featureName = f.Name ?? "";
+                    string featureType = f.GetTypeName2() ?? "";
+                    bool isSketch = string.Equals(featureType, "ProfileFeature", StringComparison.OrdinalIgnoreCase) ||
+                                    string.Equals(featureType, "3DProfileFeature", StringComparison.OrdinalIgnoreCase);
+
+                    bool matchByRegisteredId = requestedIds.Any(id =>
+                        _features.TryGetValue(id, out Feature reg) && reg == f);
+                    bool matchByName = normalizedNames.Contains(NormalizeFeatureLookup(featureName));
+                    bool matchBySketchNumber =
+                        isSketch &&
+                        requestedSketchNumber.HasValue &&
+                        TryExtractSketchNumber(featureName) == requestedSketchNumber;
+
+                    if ((deleteAllSketches && isSketch) ||
+                        matchByRegisteredId ||
+                        matchByName ||
+                        matchBySketchNumber)
+                    {
+                        if (!toDelete.Contains(f))
+                            toDelete.Add(f);
+                    }
+
+                    try { f = (Feature)f.GetNextFeature(); }
+                    catch { break; }
                 }
             }
             else if (op.LastN.HasValue)
@@ -1864,6 +2253,50 @@ namespace SwCopilotAddin.Execution
 
             string noun = toDelete.Count == 1 ? "feature" : "features";
             return $"Deleted {toDelete.Count} {noun}";
+        }
+
+        private static bool IsAllSketchesRequest(string raw)
+        {
+            string normalized = NormalizeFeatureLookup(raw);
+            return normalized == "allsketches" ||
+                   normalized == "sketches" ||
+                   normalized == "deleteallsketches";
+        }
+
+        private static int? TryExtractSketchNumber(string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+                return null;
+
+            string lowered = raw.ToLowerInvariant();
+            if (!lowered.Contains("sketch"))
+                return null;
+
+            string digits = new string(raw.Where(char.IsDigit).ToArray());
+            if (string.IsNullOrEmpty(digits))
+                return null;
+
+            return int.TryParse(digits, out int parsed) ? parsed : (int?)null;
+        }
+
+        private static string NormalizeFeatureLookup(string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+                return string.Empty;
+
+            string lowered = raw.Trim().ToLowerInvariant();
+            string[] dropTokens = { "delete", "remove", "feature", "named", "called", "the", "please" };
+            foreach (string token in dropTokens)
+                lowered = lowered.Replace(token, "");
+
+            var sb = new StringBuilder(lowered.Length);
+            foreach (char ch in lowered)
+            {
+                if (char.IsLetterOrDigit(ch))
+                    sb.Append(ch);
+            }
+
+            return sb.ToString();
         }
 
         // ── update_title_block ────────────────────────────────────────────────
@@ -2445,7 +2878,7 @@ namespace SwCopilotAddin.Execution
         /// Selects all edges of the specified features (empty list = all user features).
         /// Returns true if at least one edge was selected.
         /// </summary>
-        private bool SelectEdgesForFillet(IModelDoc2 doc, string[] featureIds)
+        private bool SelectEdgesForFillet(IModelDoc2 doc, string[] featureIds, double minEdgeLengthMm = 0.0)
         {
             doc.ClearSelection2(true);
             bool anySelected = false;
@@ -2461,7 +2894,7 @@ namespace SwCopilotAddin.Execution
                     string.Equals(id, "__top_edges__", StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(id, "top_edges", StringComparison.OrdinalIgnoreCase)))
             {
-                return SelectTopFaceBoundaryEdges(doc, selData);
+                return SelectTopFaceBoundaryEdges(doc, selData, minEdgeLengthMm);
             }
 
             if (featureIds == null || featureIds.Length == 0)
@@ -2491,6 +2924,7 @@ namespace SwCopilotAddin.Execution
                             // circular edges that break FeatureFillet when mixed with linears.
                             ICurve? curve = edge.GetCurve() as ICurve;
                             if (curve != null && !curve.IsLine()) continue;
+                            if (minEdgeLengthMm > 0.0 && EdgeLengthMm(edge) < minEdgeLengthMm) continue;
                             ((IEntity)edge).Select4(anySelected, selData);
                             anySelected = true;
                         } catch { }
@@ -2526,6 +2960,7 @@ namespace SwCopilotAddin.Execution
                                 // Skip arc/circle edges — same reason as "all edges" path
                                 ICurve? curve = edge.GetCurve() as ICurve;
                                 if (curve != null && !curve.IsLine()) continue;
+                                if (minEdgeLengthMm > 0.0 && EdgeLengthMm(edge) < minEdgeLengthMm) continue;
                                 ((IEntity)edge).Select4(anySelected, selData);
                                 anySelected = true;
                             } catch { }
@@ -2536,7 +2971,29 @@ namespace SwCopilotAddin.Execution
             return anySelected;
         }
 
-        private static bool SelectTopFaceBoundaryEdges(IModelDoc2 doc, SelectData? selData = null)
+        private static double EdgeLengthMm(IEdge edge)
+        {
+            try
+            {
+                IVertex? start = edge.GetStartVertex() as IVertex;
+                IVertex? end = edge.GetEndVertex() as IVertex;
+                double[]? p1 = ToDoubleArray(start?.GetPoint());
+                double[]? p2 = ToDoubleArray(end?.GetPoint());
+                if (p1 == null || p2 == null || p1.Length < 3 || p2.Length < 3)
+                    return double.PositiveInfinity;
+
+                double dx = p1[0] - p2[0];
+                double dy = p1[1] - p2[1];
+                double dz = p1[2] - p2[2];
+                return Math.Sqrt(dx * dx + dy * dy + dz * dz) * 1000.0;
+            }
+            catch
+            {
+                return double.PositiveInfinity;
+            }
+        }
+
+        private static bool SelectTopFaceBoundaryEdges(IModelDoc2 doc, SelectData? selData = null, double minEdgeLengthMm = 0.0)
         {
             Face2? topFace = FindPlanarFaceByZ(CollectSolidBodyFaces(doc), topFace: true);
             if (topFace == null) return false;
@@ -2559,7 +3016,12 @@ namespace SwCopilotAddin.Execution
             {
                 try
                 {
-                    ((IEntity)edgeObj).Select4(anySelected, selData);
+                    IEdge? edge = edgeObj as IEdge;
+                    if (edge == null) continue;
+                    ICurve? curve = edge.GetCurve() as ICurve;
+                    if (curve != null && !curve.IsLine()) continue;
+                    if (minEdgeLengthMm > 0.0 && EdgeLengthMm(edge) < minEdgeLengthMm) continue;
+                    ((IEntity)edge).Select4(anySelected, selData);
                     anySelected = true;
                 }
                 catch { }

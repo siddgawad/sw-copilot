@@ -196,7 +196,10 @@ namespace SwCopilotAddin.UI
                 {
                     AgentResponse? executedResponse = await ExecuteOperationGraphWithRepairAsync(prompt, ctx, response);
                     if (executedResponse == null)
+                    {
+                        RecordConversation(prompt, response, _lastOperationRuntimeForHistory);
                         return;
+                    }
                     response = executedResponse;
                 }
                 else if (response.CadCommand.HasValue)
@@ -263,12 +266,8 @@ namespace SwCopilotAddin.UI
                     SetStatus("Ready");
                 }
 
-                // Record the exchange so subsequent prompts have dimension context.
-                _history.Add(new ConversationMessage("user", prompt));
-                _history.Add(new ConversationMessage(
-                    "assistant",
-                    BuildAssistantHistoryContent(response, _lastOperationRuntimeForHistory)));
-                PruneHistory();
+                // Record the exchange so follow-up prompts keep constraints and intent.
+                RecordConversation(prompt, response, _lastOperationRuntimeForHistory);
             }
             catch (Exception ex)
             {
@@ -332,6 +331,7 @@ namespace SwCopilotAddin.UI
                     string ask = "Please provide:\n• " + string.Join("\n• ", graph.MissingInputs);
                     SetStatus("Needs clarification");
                     AppendMessage("Agent", ask);
+                    _lastOperationRuntimeForHistory = ask;
                     return null;
                 }
 
@@ -557,6 +557,15 @@ namespace SwCopilotAddin.UI
             if (value.Length <= maxChars)
                 return value;
             return value.Substring(0, maxChars) + "\n... [history truncated]";
+        }
+
+        private void RecordConversation(string userPrompt, AgentResponse response, string? runtimeResult)
+        {
+            _history.Add(new ConversationMessage("user", userPrompt));
+            _history.Add(new ConversationMessage(
+                "assistant",
+                BuildAssistantHistoryContent(response, runtimeResult)));
+            PruneHistory();
         }
 
         private void PruneHistory()

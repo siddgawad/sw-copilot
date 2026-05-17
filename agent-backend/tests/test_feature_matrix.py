@@ -194,7 +194,9 @@ def test_help_routes_to_noop(prompt):
     ("add four M5 holes at the corners",             "M5"),
 ])
 def test_followup_corner_holes_uses_bbox(prompt, fastener):
-    graph = _run(prompt, body_count=1, bbox=(100, 60, 10))
+    # M10 counterbore depth = 10mm, so plate must be > 10mm (use 12mm)
+    thickness = 12 if fastener == "M10" else 10
+    graph = _run(prompt, body_count=1, bbox=(100, 60, thickness))
     assert graph is not None
     hole = next(op for op in graph.operations if op.type == "hole_wizard")
     assert hole.fastener_size == fastener
@@ -206,7 +208,62 @@ def test_followup_corner_holes_box_too_small_returns_noop():
     graph = _run("add four M8 counterbore holes at the corners", body_count=1, bbox=(25, 20, 5))
     assert graph is not None
     assert graph.missing_inputs, "Should surface missing_inputs explaining the issue"
-    assert any("too small" in m.lower() or "fit" in m.lower() for m in graph.missing_inputs)
+    msg = " ".join(graph.missing_inputs).lower()
+    # Accepts either: spacing too small, OR counterbore depth exceeds thickness
+    assert any(kw in msg for kw in ("too small", "fit", "counterbore", "exceeds", "thickness")), \
+        f"Expected actionable feedback but got: {graph.missing_inputs}"
+
+
+# ── Smart impossibility detection (NEW) ──────────────────────────────────────
+
+def test_counterbore_depth_exceeds_thickness_gives_smart_feedback():
+    """M6 counterbore depth = 6mm on a 5mm plate → must reject with actionable suggestion."""
+    graph = _run("add four M6 counterbore holes at the corners", body_count=1, bbox=(100, 60, 5))
+    assert graph is not None
+    assert graph.missing_inputs, "Should detect impossibility and return missing_inputs"
+    msg = " ".join(graph.missing_inputs).lower()
+    assert "counterbore" in msg, "Should mention counterbore in the feedback"
+    assert "6" in msg or "depth" in msg, "Should mention the depth value"
+    assert "5" in msg or "thickness" in msg, "Should mention the part thickness"
+    # Must suggest at least one alternative
+    assert "simple" in msg or "increase" in msg or "try" in msg, "Should suggest an alternative"
+
+
+def test_fillet_radius_exceeds_half_thickness_gives_smart_feedback():
+    """3mm fillet on 5mm part → max safe = 2.49mm → must reject with suggestion."""
+    graph = _run("fillet all edges 3mm", body_count=1, bbox=(100, 60, 5))
+    assert graph is not None
+    assert graph.missing_inputs, "Should detect impossibility and return missing_inputs"
+    msg = " ".join(graph.missing_inputs).lower()
+    assert "fillet" in msg or "too large" in msg, "Should explain the problem"
+    assert "try" in msg, "Should suggest an alternative"
+
+
+def test_chamfer_exceeds_half_thickness_gives_smart_feedback():
+    """4mm chamfer on 5mm part → max safe = 2.49mm → must reject with suggestion."""
+    graph = _run("chamfer all edges 4mm", body_count=1, bbox=(100, 60, 5))
+    assert graph is not None
+    assert graph.missing_inputs, "Should detect impossibility and return missing_inputs"
+    msg = " ".join(graph.missing_inputs).lower()
+    assert "chamfer" in msg or "too large" in msg, "Should explain the problem"
+
+
+def test_counterbore_fits_when_plate_is_thick_enough():
+    """M6 counterbore on 10mm plate → should succeed (6mm < 10mm)."""
+    graph = _run("add four M6 counterbore holes at the corners", body_count=1, bbox=(100, 60, 10))
+    assert graph is not None
+    hole = next((op for op in graph.operations if op.type == "hole_wizard"), None)
+    assert hole is not None, "M6 counterbore should work on 10mm plate"
+    assert hole.hole_type == "counterbore"
+
+
+def test_fillet_works_when_radius_within_limits():
+    """2mm fillet on 5mm part → max safe = 2.49mm → should succeed."""
+    graph = _run("fillet all edges 2mm", body_count=1, bbox=(100, 60, 5))
+    assert graph is not None
+    fil = next((op for op in graph.operations if op.type == "fillet"), None)
+    assert fil is not None, "2mm fillet should work on 5mm part"
+    assert fil.radius_mm == pytest.approx(2)
 
 
 @pytest.mark.parametrize("prompt,radius", [
@@ -215,7 +272,9 @@ def test_followup_corner_holes_box_too_small_returns_noop():
     ("apply a 10mm fillet on all edges", 10),
 ])
 def test_followup_all_edge_fillet(prompt, radius):
-    graph = _run(prompt, body_count=1, bbox=(100, 60, 20))
+    # Min dimension must be > 2x radius for fillet to be valid
+    min_z = max(20, int(radius * 2.5))
+    graph = _run(prompt, body_count=1, bbox=(100, 60, min_z))
     assert graph is not None
     fil = next(op for op in graph.operations if op.type == "fillet")
     assert fil.radius_mm == pytest.approx(radius)

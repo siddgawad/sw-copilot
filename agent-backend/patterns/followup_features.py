@@ -26,7 +26,7 @@ def try_generate(prompt: str, context: Optional[DocumentContext] = None) -> Oper
     if hole_graph is not None:
         return hole_graph
 
-    edge_graph = _try_edge_finish(prompt)
+    edge_graph = _try_edge_finish(prompt, context)
     if edge_graph is not None:
         return edge_graph
 
@@ -69,8 +69,29 @@ def _try_corner_holes(prompt: str, context: Optional[DocumentContext]) -> Operat
 
     x_size = float(bbox.x_mm)
     y_size = float(bbox.y_mm)
+    z_size = float(bbox.z_mm) if bbox.z_mm else 0.0
     if x_size <= 0 or y_size <= 0:
         return _needs_input("corner hole pattern", "valid X/Y part dimensions for corner coordinates")
+
+    # ── Smart impossibility check: counterbore depth vs part thickness ──
+    if hole_type == "counterbore":
+        cbore = resolve_counterbore(fastener)
+        if cbore:
+            cb_depth = float(cbore["counterbore_depth_mm"])
+            # Part thickness is the smallest bounding box dimension
+            part_thickness = min(x_size, y_size, z_size) if z_size > 0 else z_size
+            if part_thickness > 0 and cb_depth >= part_thickness:
+                min_thick = cb_depth + 1.0
+                return _needs_input(
+                    "corner hole pattern",
+                    f"{fastener} counterbore depth is {cb_depth:g} mm (ISO 4762), but "
+                    f"part thickness is only {part_thickness:g} mm. The counterbore "
+                    f"would cut through the entire part.\n"
+                    f"Try one of:\n"
+                    f"  • 'make 4 {fastener} holes at corners' (simple through-holes, no counterbore)\n"
+                    f"  • Increase plate thickness to at least {min_thick:g} mm\n"
+                    f"  • Use a smaller fastener (M4 counterbore depth = 4 mm)",
+                )
 
     inset = _explicit_inset(prompt)
     inset_source = "explicit"
@@ -145,7 +166,7 @@ def _try_corner_holes(prompt: str, context: Optional[DocumentContext]) -> Operat
     )
 
 
-def _try_edge_finish(prompt: str) -> OperationGraph | None:
+def _try_edge_finish(prompt: str, context: Optional[DocumentContext] = None) -> OperationGraph | None:
     text = prompt.lower()
     is_chamfer = "chamfer" in text
     is_fillet = "fillet" in text
@@ -162,6 +183,29 @@ def _try_edge_finish(prompt: str) -> OperationGraph | None:
     if distance is None:
         name = "chamfer" if is_chamfer else "fillet"
         return _needs_input(name, f"{name} size in mm")
+
+    # ── Smart impossibility check: radius/distance vs part min dimension ──
+    feature_name = "chamfer" if is_chamfer else "fillet"
+    if context and context.bounding_box_mm:
+        bbox = context.bounding_box_mm
+        dims = [float(bbox.x_mm), float(bbox.y_mm)]
+        if bbox.z_mm:
+            dims.append(float(bbox.z_mm))
+        positive_dims = [d for d in dims if d > 0]
+        if positive_dims:
+            min_dim = min(positive_dims)
+            max_safe = (min_dim / 2.0) - 0.01
+            if max_safe > 0 and distance > max_safe:
+                suggested = round(max_safe * 0.8, 1)  # 80% of max for safety margin
+                if suggested < 0.5:
+                    suggested = 0.5
+                return _needs_input(
+                    feature_name,
+                    f"{feature_name.capitalize()} {distance:g} mm is too large for this "
+                    f"part. The thinnest dimension is {min_dim:g} mm, so the maximum "
+                    f"safe {feature_name} is {max_safe:.1f} mm.\n"
+                    f"Try: '{feature_name} all edges {suggested:g}mm'",
+                )
 
     top_edges = "top" in text
     edge_selector = ["__top_edges__"] if top_edges else []
