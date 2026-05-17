@@ -520,6 +520,7 @@ namespace SwCopilotAddin.Execution
                 case "update_title_block": return ExecUpdateTitleBlock(doc, op);
                 case "export_file":       return ExecExportFile(doc, op);
                 case "check_drawing":     return ExecCheckDrawing(doc, op);
+                case "generate_macro":    return ExecGenerateMacro(op);
                 case "rebuild":           doc.ForceRebuild3(false); return "Rebuild";
                 case "noop":              return op.Message ?? "No operation.";
                 default:                  return $"Unknown operation type: {op.Type}";
@@ -1581,6 +1582,15 @@ namespace SwCopilotAddin.Execution
             return "Drawing check ISSUES:\n" + string.Join("\n", issues.Select(i => "  • " + i));
         }
 
+        // ── generate_macro ─────────────────────────────────────────────────────
+
+        private string ExecGenerateMacro(OperationDto op)
+        {
+            string description = op.GenerateMacro?.Description ?? "No description";
+            string outputPath = op.GenerateMacro?.OutputPath ?? "same folder as document";
+            return $"generate_macro: '{description}' → {outputPath}. (SolidWorks macro recorder API — stub logged, full implementation Week 2)";
+        }
+
         // ── helpers ───────────────────────────────────────────────────────────
 
         private IModelDoc2? EnsurePartDoc(bool createIfMissing)
@@ -1947,23 +1957,31 @@ namespace SwCopilotAddin.Execution
             }
             else
             {
-                // Named features: select only linear edges of those specific features'
-                // adjacent body. Same linear-only filter avoids hole-edge conflicts.
-                IPartDoc? part = doc as IPartDoc;
-                object[]? bodies = part?.GetBodies2((int)swBodyType_e.swSolidBody, true) as object[];
-                if (bodies != null)
+                // Named features: walk their faces to find unique edges.
+                // Face-based walk can yield each edge twice (one per adjacent face),
+                // so deduplicate by COM identity pointer.
+                var seen = new HashSet<IntPtr>();
+                foreach (string fid in featureIds)
                 {
-                    foreach (object bodyObj in bodies)
+                    if (!_features.TryGetValue(fid, out Feature feat)) continue;
+                    object[]? faceArr = feat.GetFaces() as object[];
+                    if (faceArr == null) continue;
+                    foreach (object faceObj in faceArr)
                     {
-                        IBody2? body = bodyObj as IBody2;
-                        if (body == null) continue;
-                        object[]? edges = body.GetEdges() as object[];
-                        if (edges == null) continue;
-                        foreach (object edgeObj in edges)
+                        Face2? face = faceObj as Face2;
+                        if (face == null) continue;
+                        object[]? edgeArr = face.GetEdges() as object[];
+                        if (edgeArr == null) continue;
+                        foreach (object edgeObj in edgeArr)
                         {
                             try {
                                 IEdge? edge = edgeObj as IEdge;
                                 if (edge == null) continue;
+                                // Deduplicate by COM pointer
+                                IntPtr ptr = System.Runtime.InteropServices.Marshal.GetIUnknownForObject(edgeObj);
+                                System.Runtime.InteropServices.Marshal.Release(ptr);
+                                if (!seen.Add(ptr)) continue;
+                                // Skip arc/circle edges — same reason as "all edges" path
                                 ICurve? curve = edge.GetCurve() as ICurve;
                                 if (curve != null && !curve.IsLine()) continue;
                                 ((IEntity)edge).Select4(anySelected, null);

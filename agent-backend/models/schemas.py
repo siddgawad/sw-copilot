@@ -506,6 +506,13 @@ class CheckDrawingOp(BaseModel):
     type: Literal["check_drawing"] = "check_drawing"
 
 
+class GenerateMacroOp(BaseModel):
+    id:          str
+    type:        Literal["generate_macro"] = "generate_macro"
+    description: str
+    output_path: Optional[str] = None
+
+
 Operation = Annotated[
     Union[
         CreatePartOp, CreateSketchOp, AddCenterRectangleOp, AddCirclesOp,
@@ -513,7 +520,7 @@ Operation = Annotated[
         FilletOp, ChamferOp, HoleWizardOp,
         CircularPatternOp, LinearPatternOp, MirrorOp,
         RevolveOp, DeleteFeatureOp, NoopOp,
-        UpdateTitleBlockOp, ExportFileOp, CheckDrawingOp,
+        UpdateTitleBlockOp, ExportFileOp, CheckDrawingOp, GenerateMacroOp,
     ],
     Field(discriminator="type"),
 ]

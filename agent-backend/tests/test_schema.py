@@ -6,6 +6,7 @@ from models.schemas import (
     ExportFileConfig,
     ExportFileOp,
     CheckDrawingOp,
+    GenerateMacroOp,
     OperationGraph,
     PartSketchInfo,
 )
@@ -41,20 +42,49 @@ def test_export_file_op_roundtrip():
     assert op.export_file.output_path is None
 
 
+def test_export_file_op_invalid_format():
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        ExportFileOp(
+            id="ef2",
+            type="export_file",
+            export_file=ExportFileConfig(format="INVALID_FORMAT"),
+        )
+
+
+def test_update_title_block_op_only_custom_fields():
+    op = UpdateTitleBlockOp(
+        id="tb2",
+        type="update_title_block",
+        title_block=TitleBlockFields(custom={"Material": "Steel"}),
+    )
+    assert op.title_block.custom["Material"] == "Steel"
+    assert op.title_block.revision is None
+    assert op.title_block.drawn_by is None
+
+
 def test_check_drawing_op():
     op = CheckDrawingOp(id="cd1", type="check_drawing")
     assert op.type == "check_drawing"
 
 
+def test_generate_macro_op():
+    op = GenerateMacroOp(id="gm1", type="generate_macro", description="Export part macro")
+    assert op.description == "Export part macro"
+    assert op.output_path is None
+
+
 def test_operation_graph_with_new_ops():
     graph = OperationGraph(
         operations=[
+            {"id": "ext1", "type": "extrude_boss", "depth_mm": 10.0, "profile_id": "sk1"},
             {"id": "tb1", "type": "update_title_block",
              "title_block": {"revision": "B", "drawn_by": "Alice"}},
             {"id": "cd1", "type": "check_drawing"},
+            {"id": "gm1", "type": "generate_macro", "description": "some description"},
         ]
     )
-    assert len(graph.operations) == 2
+    assert len(graph.operations) == 4
     assert graph.schema_version == "0.2"
 
 

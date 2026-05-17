@@ -81,6 +81,15 @@ namespace SwCopilotAddin.Client
 
         // ── export_file ───────────────────────────────────────────────────────
         [JsonProperty("export_file")] public ExportFileDto? ExportFile { get; set; }
+
+        // ── generate_macro ────────────────────────────────────────────────────
+        [JsonProperty("generate_macro")] public GenerateMacroDto? GenerateMacro { get; set; }
+    }
+
+    public sealed class GenerateMacroDto
+    {
+        [JsonProperty("description")] public string? Description { get; set; }
+        [JsonProperty("output_path")] public string? OutputPath  { get; set; }
     }
 
     public sealed class TitleBlockFieldsDto
