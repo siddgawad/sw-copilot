@@ -15,6 +15,10 @@ last_macro.cs
 generated_from_*.cs
 backend.token
 
+# ── Learning memory (user-local, never commit) ────────────────────────────────
+agent-backend/memory/
+
+
 # ── C# / .NET ─────────────────────────────────────────────────────────────────
 sw-addin-client/bin/
 sw-addin-client/obj/

@@ -82,6 +82,15 @@ namespace SwCopilotAddin.Execution
                 return $"ERROR: Unsupported operation graph schema_version '{graph.SchemaVersion}'. Expected '0.2'.";
             }
 
+            // Defensive: re-suppress the "Modify dimension value" dialog in case
+            // SW or another addin toggled it back on during this session.
+            try
+            {
+                _swApp.SetUserPreferenceToggle(
+                    (int)swUserPreferenceToggle_e.swInputDimValOnCreate, false);
+            }
+            catch { /* non-fatal */ }
+
             string? documentViolation = ValidateDocumentRequirements(graph);
             if (documentViolation != null)
                 return documentViolation;
@@ -607,6 +616,8 @@ namespace SwCopilotAddin.Execution
                     result.SmartDimensions++;
 
                 result.FullyDefineStatus = TryFullyDefineActiveSketch(doc);
+                if (result.FullyDefineStatus != 0)
+                    result.Relations += TryFixActiveSketchSegments(doc);
             }
             catch
             {
@@ -644,6 +655,8 @@ namespace SwCopilotAddin.Execution
             }
 
             definition.FullyDefineStatus = TryFullyDefineActiveSketch(doc);
+            if (definition.FullyDefineStatus != 0)
+                definition.Relations += TryFixActiveSketchSegments(doc);
             doc.ClearSelection2(true);
             return $"Added {op.Circles.Length} circle(s) ({definition.Summary()})";
         }
@@ -908,6 +921,43 @@ namespace SwCopilotAddin.Execution
             }
         }
 
+        private static int TryFixActiveSketchSegments(IModelDoc2 doc)
+        {
+            try
+            {
+                Sketch? sketch = doc.GetActiveSketch2() as Sketch;
+                object[]? segments = sketch?.GetSketchSegments() as object[];
+                if (segments == null || segments.Length == 0)
+                    return 0;
+
+                doc.ClearSelection2(true);
+                int selected = 0;
+                foreach (object item in segments)
+                {
+                    if (item is not SketchSegment segment)
+                        continue;
+
+                    bool ok = segment.Select4(selected > 0, null);
+                    if (!ok)
+                        ok = segment.Select2(selected > 0, 0);
+                    if (ok)
+                        selected++;
+                }
+
+                if (selected == 0)
+                    return 0;
+
+                doc.SketchAddConstraints("sgFIXED");
+                doc.ClearSelection2(true);
+                return selected;
+            }
+            catch
+            {
+                doc.ClearSelection2(true);
+                return 0;
+            }
+        }
+
         private string ExecSketch(IModelDoc2 doc, OperationDto op)
         {
             string plane = op.Plane ?? "Top Plane";
@@ -947,6 +997,7 @@ namespace SwCopilotAddin.Execution
             }
 
             int fullyDefineStatus = TryFullyDefineActiveSketch(doc);
+            int fixedSegments = fullyDefineStatus == 0 ? 0 : TryFixActiveSketchSegments(doc);
             skMgr.InsertSketch(true); // close sketch
 
             // Register the last sketch feature so later ops can reference this op id.
@@ -954,7 +1005,7 @@ namespace SwCopilotAddin.Execution
             if (sketchFeat != null)
                 RegisterFeature(op.Id, sketchFeat);
 
-            return $"Sketch on {plane} with {drawn} entities (fully_define_status={fullyDefineStatus})";
+            return $"Sketch on {plane} with {drawn} entities (fully_define_status={fullyDefineStatus}, fixed_segments={fixedSegments})";
         }
 
         // ── extrude_boss ──────────────────────────────────────────────────────
@@ -1059,9 +1110,9 @@ namespace SwCopilotAddin.Execution
 
             // FeatureFillet(Options, R1, Ftyp, OverflowType, Radii, SetBackDistances, PointRadiusArray)
             Feature? fillet = (Feature)doc.FeatureManager.FeatureFillet(
-                0,                       // Options: 0 = none
+                (int)swFeatureFilletOptions_e.swFeatureFilletUniformRadius,
                 radius,                  // R1
-                0,                       // Ftyp: 0 = constant radius
+                (int)swFeatureFilletType_e.swFeatureFilletType_Simple,
                 0,                       // OverflowType: 0 = default
                 new object[] { radius }, // Radii
                 new object[] { },        // SetBackDistances
@@ -1121,22 +1172,14 @@ namespace SwCopilotAddin.Execution
 
             if (holeType == "counterbore")
             {
-                string? clearanceError = CreateHoleCut(
-                    doc,
-                    op.Id + "_clearance",
-                    faceOf,
-                    positions,
-                    ClearanceHoleDiameterMm(fastenerSize),
-                    throughAll: true,
-                    depthMm: 0.0,
-                    out SketchDefinitionResult clearanceDefinition);
-                if (clearanceError != null) return clearanceError;
-
+                // Cut the COUNTERBORE POCKET FIRST in solid material. If we cut the smaller
+                // clearance through-hole first, the larger counterbore circle on top of it
+                // overlaps existing void → FeatureCut3 returns null on SolidWorks 2021.
                 double counterboreDiameter = CounterboreDiameterMm(fastenerSize);
                 double counterboreDepth = CounterboreDepthMm(fastenerSize);
                 string? counterboreError = CreateHoleCut(
                     doc,
-                    op.Id,
+                    op.Id + "_counterbore",
                     faceOf,
                     positions,
                     counterboreDiameter,
@@ -1145,10 +1188,22 @@ namespace SwCopilotAddin.Execution
                     out SketchDefinitionResult counterboreDefinition);
                 if (counterboreError != null) return counterboreError;
 
+                // Then cut the smaller clearance hole through-all from the pocket floor down.
+                string? clearanceError = CreateHoleCut(
+                    doc,
+                    op.Id,
+                    faceOf,
+                    positions,
+                    ClearanceHoleDiameterMm(fastenerSize),
+                    throughAll: true,
+                    depthMm: 0.0,
+                    out SketchDefinitionResult clearanceDefinition);
+                if (clearanceError != null) return clearanceError;
+
                 return $"{positions.Length}x {fastenerSize} counterbore hole(s) " +
-                       $"(clearance dia {ClearanceHoleDiameterMm(fastenerSize):0.###} mm through, " +
-                       $"counterbore dia {counterboreDiameter:0.###} mm x {counterboreDepth:0.###} mm deep; " +
-                       $"clearance {clearanceDefinition.Summary()}; counterbore {counterboreDefinition.Summary()})";
+                       $"(counterbore dia {counterboreDiameter:0.###} mm x {counterboreDepth:0.###} mm deep then " +
+                       $"clearance dia {ClearanceHoleDiameterMm(fastenerSize):0.###} mm through; " +
+                       $"counterbore {counterboreDefinition.Summary()}; clearance {clearanceDefinition.Summary()})";
             }
 
             bool thruAll = op.ThroughAll || (op.DepthMm ?? 0) <= 0;
@@ -1203,6 +1258,8 @@ namespace SwCopilotAddin.Execution
             }
 
             definition.FullyDefineStatus = TryFullyDefineActiveSketch(doc);
+            if (definition.FullyDefineStatus != 0)
+                definition.Relations += TryFixActiveSketchSegments(doc);
             skMgr.InsertSketch(true);
 
             double depth = Mm(depthMm);
@@ -1409,8 +1466,9 @@ namespace SwCopilotAddin.Execution
 
         private string ExecShell(IModelDoc2 doc, OperationDto op)
         {
-            double thickness = Mm(op.DistanceMm);
-            if (thickness <= 0) return "ERROR: shell requires distance_mm (wall thickness) > 0";
+            double thicknessMm = op.ThicknessMm ?? op.DistanceMm ?? 0;
+            double thickness = Mm(thicknessMm);
+            if (thickness <= 0) return "ERROR: shell requires thickness_mm (wall thickness) > 0";
 
             doc.ClearSelection2(true);
 
@@ -1449,7 +1507,7 @@ namespace SwCopilotAddin.Execution
 
             RegisterFeature(op.Id, feat);
             doc.ForceRebuild3(false);
-            return $"Shell thickness={op.DistanceMm:0.#} mm";
+            return $"Shell thickness={thicknessMm:0.#} mm";
         }
 
         // ── draft ─────────────────────────────────────────────────────────────
@@ -1460,7 +1518,7 @@ namespace SwCopilotAddin.Execution
             double angleRad = angleDeg * Math.PI / 180.0;
             if (angleRad <= 0) return "ERROR: draft angle_deg must be positive";
 
-            string neutralPlane = op.MirrorPlane ?? "Top Plane";
+            string neutralPlane = op.NeutralPlane ?? op.MirrorPlane ?? "Top Plane";
 
             doc.ClearSelection2(true);
 
@@ -1542,8 +1600,9 @@ namespace SwCopilotAddin.Execution
             if (string.IsNullOrEmpty(op.ProfileId))
                 return "ERROR: rib requires profile_id (open sketch)";
 
-            double thickness = Mm(op.DistanceMm);
-            if (thickness <= 0) return "ERROR: rib requires distance_mm (thickness) > 0";
+            double thicknessMm = op.ThicknessMm ?? op.DistanceMm ?? 0;
+            double thickness = Mm(thicknessMm);
+            if (thickness <= 0) return "ERROR: rib requires thickness_mm (thickness) > 0";
 
             doc.ClearSelection2(true);
 
@@ -1580,7 +1639,7 @@ namespace SwCopilotAddin.Execution
 
             RegisterFeature(op.Id, feat);
             doc.ForceRebuild3(false);
-            return $"Rib thickness={op.DistanceMm:0.#} mm from profile '{op.ProfileId}'";
+            return $"Rib thickness={thicknessMm:0.#} mm from profile '{op.ProfileId}'";
         }
 
         // ── swept_boss ────────────────────────────────────────────────────────

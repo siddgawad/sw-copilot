@@ -50,6 +50,54 @@ if ([string]::IsNullOrWhiteSpace($SolidWorksPath)) {
     }
 }
 
+function Ensure-RuntimeDependencies {
+    param(
+        [Parameter(Mandatory = $true)][string]$OutputDirectory
+    )
+
+    $requiredRuntimeDlls = @(
+        "Newtonsoft.Json.dll",
+        "Microsoft.CodeAnalysis.dll",
+        "Microsoft.CodeAnalysis.CSharp.dll",
+        "System.Buffers.dll",
+        "System.Collections.Immutable.dll",
+        "System.Memory.dll",
+        "System.Numerics.Vectors.dll",
+        "System.Reflection.Metadata.dll",
+        "System.Runtime.CompilerServices.Unsafe.dll",
+        "System.Text.Encoding.CodePages.dll",
+        "System.Threading.Tasks.Extensions.dll"
+    )
+
+    $missing = @($requiredRuntimeDlls | Where-Object {
+        -not (Test-Path -LiteralPath (Join-Path $OutputDirectory $_))
+    })
+
+    if ($missing.Count -eq 0) {
+        return
+    }
+
+    Write-Host "Runtime dependencies missing from $OutputDirectory"
+    foreach ($dll in $missing) {
+        Write-Host "  Missing: $dll"
+    }
+    Write-Host "Rebuilding add-in output to restore runtime dependencies..."
+
+    $projectFile = Join-Path $scriptDir "SwCopilotAddin.csproj"
+    & dotnet build $projectFile -c Release -p:Platform=x64 -p:RegisterForComInterop=false "-p:OutDir=$OutputDirectory\"
+    if ($LASTEXITCODE -ne 0) {
+        throw "dotnet build failed while restoring runtime dependencies."
+    }
+
+    $stillMissing = @($requiredRuntimeDlls | Where-Object {
+        -not (Test-Path -LiteralPath (Join-Path $OutputDirectory $_))
+    })
+
+    if ($stillMissing.Count -gt 0) {
+        throw "Build completed but runtime dependencies are still missing from ${OutputDirectory}: $($stillMissing -join ', ')"
+    }
+}
+
 $outDir  = Join-Path $scriptDir "bin\x64\$BuildConfig\net48"
 $addinDll = Join-Path $outDir "SwCopilotAddin.dll"
 $regasm  = Join-Path $env:SystemRoot "Microsoft.NET\Framework64\v4.0.30319\RegAsm.exe"
@@ -62,6 +110,8 @@ if (-not (Test-Path $regasm)) {
 }
 
 # ── Interop DLLs needed by RegAsm at registration time ───────────────────────
+
+Ensure-RuntimeDependencies -OutputDirectory $outDir
 
 $interopDlls = @(
     "SolidWorks.Interop.sldworks.dll",

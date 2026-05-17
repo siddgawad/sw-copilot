@@ -5,6 +5,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using Microsoft.Win32;
 using SolidWorks.Interop.sldworks;
+using SolidWorks.Interop.swconst;
 using SolidWorks.Interop.swpublished;
 
 namespace SwCopilotAddin.AddinCore
@@ -36,6 +37,20 @@ namespace SwCopilotAddin.AddinCore
 
                 // Required so SolidWorks can route callbacks back into this addin.
                 _swApp.SetAddinCallbackInfo2(0, this, Cookie);
+
+                // Quiet mode: suppress the "Modify value" dialog that SolidWorks
+                // pops up every time IAddDiameterDimension2 / IAddLinearDimension
+                // fires. The agent always knows the exact value it wants — there
+                // is no human to confirm. This is global to the SW session.
+                try
+                {
+                    _swApp.SetUserPreferenceToggle(
+                        (int)swUserPreferenceToggle_e.swInputDimValOnCreate, false);
+                }
+                catch (Exception toggleEx)
+                {
+                    Log("Failed to suppress input-dim-value dialog: " + toggleEx.Message);
+                }
 
                 AddTaskPane();
                 Log("ConnectToSW completed.");

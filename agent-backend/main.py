@@ -4,6 +4,7 @@ import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from pydantic import BaseModel
 from groq import APIConnectionError, APIError, APIStatusError, APITimeoutError
 from starlette.concurrency import run_in_threadpool
 
@@ -16,6 +17,7 @@ from agents.macro_engineer import MacroEngineerAgent, ProviderQuotaError, try_fa
 from agents.rag_agent import RagAgent
 from agents.run_trace import make_trace_id, save_generate_trace, save_validation_trace
 from agents.validation_agent import validate as validate_graph_against_report
+from learn import record_failure
 from patterns.router import try_pattern_match
 from models.schemas import (
     DocumentContext, GenerateRequest, GenerateResponse,
@@ -306,6 +308,34 @@ async def validate(req: ValidateRequest) -> ValidationReport:
             report,
         )
     return report
+
+
+class _FeedbackPayload(BaseModel):
+    """Failure report from the C# add-in. Pydantic for easy validation."""
+    prompt:      str
+    op_types:    list[str]   = []
+    error_class: str         = "UNKNOWN"
+    error_msg:   str         = ""
+    part_family: str         = ""
+
+
+@app.post("/feedback", dependencies=[Depends(verify_token)])
+async def feedback(req: _FeedbackPayload) -> dict:
+    """
+    Record an execution failure so the planner can learn from it.
+    Called by the add-in after a /generate response leads to a failed Execute().
+    Subsequent /generate calls with similar prompts will see this failure in the
+    LLM's lesson block, preventing the same broken plan from being generated.
+    """
+    rec = await run_in_threadpool(
+        record_failure,
+        req.prompt,
+        req.op_types,
+        req.error_class,
+        req.error_msg,
+        req.part_family,
+    )
+    return {"recorded": True, "timestamp": rec.timestamp, "tokens": len(rec.tokens)}
 
 
 @app.get("/version")

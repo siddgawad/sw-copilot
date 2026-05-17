@@ -193,6 +193,46 @@ namespace SwCopilotAddin.Client
                        },
                    };
         }
+
+        /// <summary>
+        /// Reports a failed execution back to the backend so the planner can
+        /// learn from it. Fire-and-forget: never throws to the caller, never
+        /// blocks the UI. Best-effort.
+        /// </summary>
+        public async Task ReportFailureAsync(
+            string prompt,
+            IEnumerable<string> opTypes,
+            string errorClass,
+            string errorMsg,
+            string? partFamily = null)
+        {
+            try
+            {
+                await BackendRuntime.EnsureReadyAsync(_http, BaseUrl);
+
+                var payload = new
+                {
+                    prompt       = prompt ?? "",
+                    op_types     = opTypes?.ToArray() ?? System.Array.Empty<string>(),
+                    error_class  = errorClass ?? "UNKNOWN",
+                    error_msg    = errorMsg ?? "",
+                    part_family  = partFamily ?? "",
+                };
+
+                string json = JsonConvert.SerializeObject(payload);
+                using var request = new HttpRequestMessage(HttpMethod.Post, $"{BaseUrl.TrimEnd('/')}/feedback")
+                {
+                    Content = new StringContent(json, Encoding.UTF8, "application/json"),
+                };
+                request.Headers.Add("X-Copilot-Token", BackendRuntime.ReadToken());
+                using var response = await _http.SendAsync(request);
+                // Discard body — best-effort.
+            }
+            catch
+            {
+                // Learning is opportunistic; never block the user on a feedback POST.
+            }
+        }
     }
 
     public sealed class ConversationMessage

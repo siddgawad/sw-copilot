@@ -651,17 +651,35 @@ def build_user_message(
 
 def build_system_prompt(
     conversation_history: list[ConversationMessage] | None = None,
+    user_prompt: str | None = None,
 ) -> str:
     """Return the system prompt, with the repair addendum appended when the
     previous assistant turn contains an execution error. When the LLM has
     already attempted a repair that produced the same broken graph, escalate
     to the repetition note so it is forced to either change face_of to a
-    standard plane or output noop."""
-    if not _has_execution_error(conversation_history):
-        return _COMPACT_SYSTEM_PROMPT
-    prompt = _COMPACT_SYSTEM_PROMPT + _COMPACT_REPAIR_ADDENDUM
-    if _repair_loop_repeated(conversation_history):
-        prompt += _REPAIR_REPETITION_NOTE
+    standard plane or output noop.
+
+    If `user_prompt` is provided, query the failure memory for relevant past
+    failures and inject them as a 'lessons' block — this is how the system
+    learns from its own mistakes across sessions.
+    """
+    prompt = _COMPACT_SYSTEM_PROMPT
+    if _has_execution_error(conversation_history):
+        prompt += _COMPACT_REPAIR_ADDENDUM
+        if _repair_loop_repeated(conversation_history):
+            prompt += _REPAIR_REPETITION_NOTE
+
+    if user_prompt:
+        try:
+            from learn import relevant_failures, summarize_for_prompt
+            past = relevant_failures(user_prompt, k=3, min_similarity=0.25)
+            lessons = summarize_for_prompt(past)
+            if lessons:
+                prompt += "\n\n" + lessons + "\n"
+        except Exception:
+            # Memory is opportunistic — never block generation on retrieval failure.
+            pass
+
     return prompt
 
 
@@ -853,7 +871,7 @@ class MacroEngineerAgent:
     ) -> OperationGraph:
         conversation_history = _trim_history(conversation_history)
         user_message = build_user_message(prompt, ctx, rag_context)
-        system = build_system_prompt(conversation_history)
+        system = build_system_prompt(conversation_history, user_prompt=prompt)
         messages: list[dict] = [{"role": "system", "content": system}]
 
         for msg in (conversation_history or []):

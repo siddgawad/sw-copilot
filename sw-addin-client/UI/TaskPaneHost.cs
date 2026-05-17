@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
+using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -39,6 +40,15 @@ namespace SwCopilotAddin.UI
         private static readonly bool AllowLegacyMacroFallback =
             string.Equals(
                 System.Environment.GetEnvironmentVariable("SW_COPILOT_ALLOW_LEGACY_MACROS"),
+                "1",
+                StringComparison.Ordinal);
+
+        // Auto-execute by default. The agent always knows exactly what it intends
+        // to build; the modal Confirm dialog is friction the user explicitly
+        // does not want. Power users can re-enable the dialog with the env var.
+        private static readonly bool RequireConfirmation =
+            string.Equals(
+                System.Environment.GetEnvironmentVariable("SW_COPILOT_REQUIRE_CONFIRM"),
                 "1",
                 StringComparison.Ordinal);
 
@@ -194,15 +204,18 @@ namespace SwCopilotAddin.UI
                     CadCommandDto command = response.CadCommand.Value;
                     string commandJson = JsonConvert.SerializeObject(command, Formatting.Indented);
 
-                    SetStatus("Waiting for command review...");
-                    using (var preview = new MacroPreviewDialog(commandJson, response.StatusMessage))
+                    if (RequireConfirmation)
                     {
-                        if (preview.ShowDialog(this) != DialogResult.OK)
+                        SetStatus("Waiting for command review...");
+                        using (var preview = new MacroPreviewDialog(commandJson, response.StatusMessage))
                         {
-                            const string cancelled = "Execution cancelled by user. CAD command was not run.";
-                            SetStatus("Ready");
-                            AppendMessage("Runtime", cancelled);
-                            return;
+                            if (preview.ShowDialog(this) != DialogResult.OK)
+                            {
+                                const string cancelled = "Execution cancelled by user. CAD command was not run.";
+                                SetStatus("Ready");
+                                AppendMessage("Runtime", cancelled);
+                                return;
+                            }
                         }
                     }
 
@@ -222,8 +235,11 @@ namespace SwCopilotAddin.UI
                     }
                     else
                     {
-                        SetStatus("Waiting for macro review...");
+                        SetStatus("Executing macro...");
                         string macroCode = response.MacroCode!;
+                        // Roslyn fallback is gated by RequireConfirmation AND the env flag.
+                        // For the legacy macro path we always require a confirm dialog
+                        // regardless of auto-execute, because Roslyn runs user-provided C#.
                         using (var preview = new MacroPreviewDialog(macroCode, response.StatusMessage))
                         {
                             if (preview.ShowDialog(this) != DialogResult.OK)
@@ -292,16 +308,22 @@ namespace SwCopilotAddin.UI
 
                 string preview = FormatOperationPlan(graph, currentResponse.StatusMessage);
                 SetStatus(repairAttempt == 0
-                    ? "Review operation plan..."
-                    : $"Review repaired plan ({repairAttempt}/{MaxAutoRepairAttempts})...");
+                    ? "Executing operation plan..."
+                    : $"Executing repaired plan ({repairAttempt}/{MaxAutoRepairAttempts})...");
 
-                using (var dlg = new MacroPreviewDialog(preview, currentResponse.StatusMessage))
+                // Default: auto-execute. The plan is logged into the chat but no
+                // modal interrupts the flow. Set SW_COPILOT_REQUIRE_CONFIRM=1 to
+                // re-enable the legacy Confirm dialog.
+                if (RequireConfirmation)
                 {
-                    if (dlg.ShowDialog(this) != DialogResult.OK)
+                    using (var dlg = new MacroPreviewDialog(preview, currentResponse.StatusMessage))
                     {
-                        SetStatus("Ready");
-                        AppendMessage("Runtime", "Execution cancelled by user.");
-                        return null;
+                        if (dlg.ShowDialog(this) != DialogResult.OK)
+                        {
+                            SetStatus("Ready");
+                            AppendMessage("Runtime", "Execution cancelled by user.");
+                            return null;
+                        }
                     }
                 }
 
@@ -329,6 +351,9 @@ namespace SwCopilotAddin.UI
                 {
                     string validationStatus = await ValidateExecutionResultAsync(graph, result);
                     SetStatus(validationStatus);
+                    // Hard, non-repairable failure (e.g. rule violation, hole cut null).
+                    // Record it so the planner learns to avoid this pattern next time.
+                    _ = ReportFailureFireAndForget(prompt, graph, result);
                     return currentResponse;
                 }
 
@@ -339,6 +364,7 @@ namespace SwCopilotAddin.UI
                     AppendMessage(
                         "Agent",
                         "Deterministic plan failed. Automatic repair was skipped because regenerating the same JSON would repeat the same failure. Check the run trace and PartReport before changing the planner.");
+                    _ = ReportFailureFireAndForget(prompt, graph, result);
                     return currentResponse;
                 }
 
@@ -346,6 +372,7 @@ namespace SwCopilotAddin.UI
                 {
                     SetStatus("Error - auto-repair exhausted");
                     AppendMessage("Agent", $"Automatic repair stopped after {MaxAutoRepairAttempts} failed attempts.");
+                    _ = ReportFailureFireAndForget(prompt, graph, result);
                     return currentResponse;
                 }
 
@@ -355,6 +382,65 @@ namespace SwCopilotAddin.UI
                 currentResponse = await _client.SendPromptAsync(prompt, ctx, repairHistory);
                 AppendMessage("Agent", currentResponse.StatusMessage);
             }
+        }
+
+        private Task ReportFailureFireAndForget(
+            string userPrompt,
+            OperationGraphDto graph,
+            string executorResult)
+        {
+            try
+            {
+                var opTypes = graph.Operations?
+                    .Select(o => o?.Type ?? "unknown")
+                    .Where(t => !string.IsNullOrEmpty(t))
+                    .ToArray() ?? System.Array.Empty<string>();
+
+                string errorClass = ClassifyExecutorResult(executorResult);
+                string errorMsg = ExtractFirstErrorLine(executorResult);
+
+                return _client.ReportFailureAsync(
+                    userPrompt,
+                    opTypes,
+                    errorClass,
+                    errorMsg,
+                    graph.PartFamily ?? "");
+            }
+            catch
+            {
+                return Task.CompletedTask;
+            }
+        }
+
+        private static string ClassifyExecutorResult(string result)
+        {
+            if (result.IndexOf("RULE VIOLATION", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "RULE_VIOLATION";
+            if (result.IndexOf("Hole cut failed", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "CUT_FAILED";
+            if (result.IndexOf("Fillet failed", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "FILLET_FAILED";
+            if (result.IndexOf("Shell", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                result.IndexOf("ERROR", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "SHELL_FAILED";
+            if (result.IndexOf("ERROR:", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "EXECUTION_FAILED";
+            return "UNKNOWN";
+        }
+
+        private static string ExtractFirstErrorLine(string result)
+        {
+            if (string.IsNullOrEmpty(result)) return "";
+            foreach (string line in result.Split('\n'))
+            {
+                string trimmed = line.Trim();
+                if (trimmed.IndexOf("ERROR", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    trimmed.IndexOf("RULE VIOLATION", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return trimmed.Length > 400 ? trimmed.Substring(0, 400) : trimmed;
+                }
+            }
+            return result.Length > 400 ? result.Substring(0, 400) : result;
         }
 
         private static bool IsRepairableExecutionFailure(string result)
@@ -602,6 +688,14 @@ namespace SwCopilotAddin.UI
             if (!string.IsNullOrWhiteSpace(graph.PartName))
                 sb.AppendLine("PART: " + graph.PartName);
 
+            string manufacturingIntent = FormatManufacturingIntent(graph.ManufacturingIntent);
+            if (!string.IsNullOrWhiteSpace(manufacturingIntent))
+            {
+                sb.AppendLine();
+                sb.AppendLine("MANUFACTURING INTENT:");
+                sb.AppendLine("  * " + manufacturingIntent);
+            }
+
             if (graph.MissingInputs?.Length > 0)
             {
                 sb.AppendLine();
@@ -658,6 +752,14 @@ namespace SwCopilotAddin.UI
                     return $"Mirror about {op.MirrorPlane ?? "Right Plane"}";
                 case "revolve":
                     return $"Revolve {op.AngleDeg ?? 360:0.#}° from '{op.ProfileId}'";
+                case "shell":
+                    return $"Shell {ThicknessValue(op):0.#} mm from '{op.FaceOf ?? "top face"}'";
+                case "draft":
+                    return $"Draft {op.AngleDeg ?? 3:0.#} degrees on '{op.FaceOf ?? "body"}' using {op.NeutralPlane ?? op.MirrorPlane ?? "Top Plane"}";
+                case "rib":
+                    return $"Rib {ThicknessValue(op):0.#} mm from '{op.ProfileId}'";
+                case "swept_boss":
+                    return $"Swept boss from profile '{op.ProfileId}' along path '{op.PathId}'";
                 case "delete_feature":
                     if (op.LastN.HasValue) return $"Delete last {op.LastN} feature(s)";
                     if (op.FeatureIds?.Length > 0) return "Delete: " + string.Join(", ", op.FeatureIds);
@@ -673,6 +775,46 @@ namespace SwCopilotAddin.UI
                 default:
                     return op.Type ?? "unknown";
             }
+        }
+
+        private static string FormatManufacturingIntent(ManufacturingIntentDto? intent)
+        {
+            if (intent == null)
+                return "";
+
+            string material = FormatDisplayToken(intent.Material, "steel");
+            string process = FormatDisplayToken(intent.Process, "machined");
+            string tolerance = FormatToleranceClass(intent.ToleranceClass);
+            return $"Material: {material} | Process: {process} | Tolerance: {tolerance}";
+        }
+
+        private static string FormatDisplayToken(string? value, string fallback)
+        {
+            string token = string.IsNullOrWhiteSpace(value) ? fallback : value!.Trim();
+            if (token.Length == 0)
+                return fallback;
+            return char.ToUpperInvariant(token[0]) + (token.Length > 1 ? token.Substring(1) : "");
+        }
+
+        private static string FormatToleranceClass(string? value)
+        {
+            string token = string.IsNullOrWhiteSpace(value) ? "medium" : value!.Trim();
+            switch (token.ToLowerInvariant())
+            {
+                case "fine":
+                    return "ISO 2768-f (fine)";
+                case "medium":
+                    return "ISO 2768-m (medium)";
+                case "coarse":
+                    return "ISO 2768-c (coarse)";
+                default:
+                    return $"ISO 2768-{token} ({token})";
+            }
+        }
+
+        private static double ThicknessValue(OperationDto op)
+        {
+            return op.ThicknessMm ?? op.DistanceMm ?? 0;
         }
     }
 }

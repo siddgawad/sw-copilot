@@ -48,6 +48,8 @@ namespace SwCopilotAddin.Client
         [JsonProperty("cut_type")]    public string? CutType    { get; set; }
         [JsonProperty("direction")]   public string? Direction  { get; set; }
         [JsonProperty("angle_deg")]   public double? AngleDeg   { get; set; }
+        [JsonProperty("thickness_mm")] public double? ThicknessMm { get; set; }
+        [JsonProperty("neutral_plane")] public string? NeutralPlane { get; set; }
 
         // ── fillet / chamfer ──────────────────────────────────────────────────
         [JsonProperty("feature_ids")]  public string[] FeatureIds  { get; set; } = System.Array.Empty<string>();

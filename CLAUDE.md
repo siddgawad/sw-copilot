@@ -180,7 +180,7 @@ cd C:\projects\sw-copilot\agent-backend
 cd C:\projects\sw-copilot\sw-addin-client
 dotnet build SwCopilotAddin.csproj -c Release -p:Platform=x64 `
   -p:RegisterForComInterop=false `
-  -p:OutDir=C:\projects\sw-copilot\sw-addin-client\bin\x64\Release-beta6\net48\
+  -p:OutDir=C:\projects\sw-copilot\sw-addin-client\bin\x64\Release-beta7\net48\
 ```
 
 **Register add-in (elevated PS in `sw-addin-client\`):**
@@ -261,6 +261,23 @@ Routing for the next build wave:
 ## Handoff Queue
 *Both agents check this section at the start of every session. Cross items
 off when done. Settled items move to `docs/CHANGELOG.md`.*
+
+- [x] **[Codex -> all]** SOURCE-ROOT-001: Source of truth corrected to
+  `C:\Projects\sw-copilot` only. Ignore the accidental home-folder working
+  copy under `C:\Users\theof` for build/register/test instructions. Codex
+  ported the required C# fixes into the Projects repo: runtime dependency
+  guard in `Register-DevAddin.ps1`, C# DTO support for `thickness_mm` and
+  `neutral_plane`, shell/rib/draft executor alignment with backend schema,
+  manufacturing intent + shell/draft/rib/sweep preview text, fillet COM
+  options fix, and fully-defined sketch fallback constraints. Validation:
+  `dotnet build .\SwCopilotAddin.csproj -c Release -p:Platform=x64
+  -p:RegisterForComInterop=false
+  "-p:OutDir=C:\Projects\sw-copilot\sw-addin-client\bin\x64\Release-beta7\net48\"`
+  -> `0 Warning(s), 0 Error(s)`; required runtime DLLs including
+  `Newtonsoft.Json.dll` are present in `Release-beta7`; scoped backend
+  follow-up tests for corner counterbores and top chamfers passed (`2 passed`).
+  Next live test must register from
+  `C:\Projects\sw-copilot\sw-addin-client`, not from `C:\Users\theof`.
 
 - [ ] **[Codex -> Claude]** SW-LIVE-BOX-HOLES-CHAMFER-001:
   Codex patched the exact failures from the user's live test. Deterministic
