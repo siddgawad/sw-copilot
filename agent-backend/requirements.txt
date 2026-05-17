@@ -4,8 +4,7 @@ uvicorn[standard]==0.29.0
 python-multipart==0.0.9       # multipart/form-data support (PDF upload endpoint)
 
 # ── LLM providers ──────────────────────────────────────────────────────────────
-groq>=1.0.0                   # Groq SDK — fallback provider (0.9.x breaks on httpx 0.28+)
-google-genai>=2.0.0           # Gemini free tier: 1M TPM, no rate limits (new official SDK)
+groq==0.9.0                   # Groq SDK — fallback / legacy provider
 openai>=1.30.0                # OpenAI-compat SDK — used for NVIDIA NIM and Ollama
 
 # ── Vector store & embeddings ──────────────────────────────────────────────────
@@ -16,11 +15,11 @@ sentence-transformers==2.7.0  # local embedding model; swap for OpenAI embeds if
 pypdf==4.2.0
 
 # ── Data validation & config ───────────────────────────────────────────────────
-pydantic>=2.7.1
-pydantic-settings>=2.3.0
+pydantic==2.7.1
+pydantic-settings==2.3.0
 
 # ── HTTP (used in tests / health checks) ───────────────────────────────────────
-httpx>=0.27.0
+httpx==0.27.0
 
 # ── Testing ─────────────────────────────────────────────────────────────────────
 pytest>=9.0.0

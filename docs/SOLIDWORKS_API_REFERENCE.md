@@ -13,34 +13,6 @@ sketchMgr.CreateCircleByRadius(cx,cy,0, radius)      // metres
 sketchMgr.CreateLine(x1,y1,0, x2,y2,0)
 ```
 
-## Sketch dimensions / fully-defined sketches
-
-Verified by interop reflection and SOLIDWORKS API Help:
-
-```csharp
-doc.IAddHorizontalDimension2(x, y, z)                 // selected sketch segment / points
-doc.IAddVerticalDimension2(x, y, z)                   // selected sketch segment / points
-doc.IAddDiameterDimension2(x, y, z)                   // selected circle / arc segment
-doc.SketchAddConstraints("sgCOINCIDENT")              // selected sketch point + origin
-
-sketchMgr.FullyDefineSketch(
-  true,  true, relationMask,
-  true,  1, null,
-  1,     null,
-  1,     1)
-```
-
-`AddDimension2` and the horizontal/vertical/diameter variants create display
-dimensions for selected entities. `FullyDefineSketch` can apply relations and
-baseline dimensions to the active sketch; the SOLIDWORKS C# help example uses
-relation flags for horizontal/vertical plus baseline dimension schemes with
-null datums.
-
-Sources:
-- https://help.solidworks.com/2016/English/api/sldworksapi/SolidWorks.Interop.sldworks~SolidWorks.Interop.sldworks.IModelDoc2~AddDimension2.html
-- https://help.solidworks.com/2013/english/api/sldworksapi/SOLIDWORKS.Interop.sldworks~SOLIDWORKS.Interop.sldworks.ISketchManager~FullyDefineSketch.html
-- https://help.solidworks.com/2021/English/api/sldworksapi/Fully_Define_Underdefined_Sketch_Example_CSharp.htm
-
 ## Extrude
 
 ```csharp

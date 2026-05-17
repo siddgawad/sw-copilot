@@ -149,7 +149,7 @@ async def generate(req: GenerateRequest) -> GenerateResponse:
     sanitized_context = _sanitize_context(req.context)
 
     # ── Deterministic pattern library (runs before any LLM call) ─────────────
-    pattern_graph = try_pattern_match(req.prompt, sanitized_context)
+    pattern_graph = try_pattern_match(req.prompt)
     if pattern_graph is not None:
         has_missing = bool(pattern_graph.missing_inputs)
         trace_id = make_trace_id(pattern_graph.part_name)
@@ -338,7 +338,7 @@ async def status() -> dict:
         "fallback_chain":   settings.llm_fallback_chain or "(none configured)",
         "providers_configured": providers_configured,
         "groq_model":       settings.groq_model,
-        "fast_paths":       ["box", "cylinder", "shaft", "gear", "base_plate", "followup_features", "help"],
+        "fast_paths":       ["box", "cylinder", "shaft", "gear", "base_plate", "help"],
         "tip": (
             "Fast-path operations (box, cylinder, shaft, etc.) never call the AI provider "
             "and always work regardless of quota state."

@@ -1,4 +1,3 @@
-using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.RegularExpressions;
@@ -13,14 +12,6 @@ namespace SwCopilotAddin.Client
         public int          BodyCount         { get; set; }
         public string       FilePath          { get; set; } = string.Empty;
         public List<string> SelectedEntityIds { get; set; } = new();
-        public BoundingBoxMm? BoundingBoxMm   { get; set; }
-    }
-
-    public sealed class BoundingBoxMm
-    {
-        public double XMm { get; set; }
-        public double YMm { get; set; }
-        public double ZMm { get; set; }
     }
 
     public sealed class DocumentContextBuilder
@@ -52,7 +43,6 @@ namespace SwCopilotAddin.Client
             {
                 var bodies = part.GetBodies2((int)swBodyType_e.swSolidBody, true) as object[];
                 ctx.BodyCount = bodies?.Length ?? 0;
-                ctx.BoundingBoxMm = BuildBoundingBoxMm(bodies);
             }
 
             ISelectionMgr selMgr   = doc.ISelectionManager;
@@ -79,66 +69,6 @@ namespace SwCopilotAddin.Client
             {
                 return SanitizeContextValue(path);
             }
-        }
-
-        private static BoundingBoxMm? BuildBoundingBoxMm(object[]? bodies)
-        {
-            double[]? box = GetCombinedBodyBox(bodies);
-            if (box == null)
-                return null;
-
-            return new BoundingBoxMm
-            {
-                XMm = Math.Round((box[3] - box[0]) * 1000.0, 3),
-                YMm = Math.Round((box[4] - box[1]) * 1000.0, 3),
-                ZMm = Math.Round((box[5] - box[2]) * 1000.0, 3),
-            };
-        }
-
-        private static double[]? GetCombinedBodyBox(object[]? bodies)
-        {
-            if (bodies == null)
-                return null;
-
-            double[]? combined = null;
-            foreach (object bodyObj in bodies)
-            {
-                if (!(bodyObj is IBody2 body)) continue;
-                double[]? bodyBox = ToDoubleArray(body.GetBodyBox());
-                if (bodyBox == null || bodyBox.Length < 6) continue;
-
-                if (combined == null)
-                {
-                    combined = new[] { bodyBox[0], bodyBox[1], bodyBox[2], bodyBox[3], bodyBox[4], bodyBox[5] };
-                }
-                else
-                {
-                    combined[0] = Math.Min(combined[0], bodyBox[0]);
-                    combined[1] = Math.Min(combined[1], bodyBox[1]);
-                    combined[2] = Math.Min(combined[2], bodyBox[2]);
-                    combined[3] = Math.Max(combined[3], bodyBox[3]);
-                    combined[4] = Math.Max(combined[4], bodyBox[4]);
-                    combined[5] = Math.Max(combined[5], bodyBox[5]);
-                }
-            }
-
-            return combined;
-        }
-
-        private static double[]? ToDoubleArray(object? value)
-        {
-            if (value is double[] doubles)
-                return doubles;
-
-            if (value is object[] objects)
-            {
-                var result = new double[objects.Length];
-                for (int i = 0; i < objects.Length; i++)
-                    result[i] = Convert.ToDouble(objects[i]);
-                return result;
-            }
-
-            return null;
         }
 
         private static string SanitizeContextValue(string value)

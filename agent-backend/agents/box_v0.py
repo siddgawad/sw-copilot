@@ -18,15 +18,6 @@ _BY_NOTATION = re.compile(
     r"(\d+(?:\.\d+)?)\s+by\s+(\d+(?:\.\d+)?)\s+by\s+(\d+(?:\.\d+)?)",
     re.IGNORECASE,
 )
-_DIM_WITH_OPTIONAL_UNIT = r"(\d+(?:\.\d+)?)\s*(?:mm)?"
-_X_NOTATION = re.compile(
-    rf"{_DIM_WITH_OPTIONAL_UNIT}\s*[xX]\s*{_DIM_WITH_OPTIONAL_UNIT}\s*[xX]\s*{_DIM_WITH_OPTIONAL_UNIT}\s*(?:mm)?",
-    re.IGNORECASE,
-)
-_BY_NOTATION = re.compile(
-    rf"{_DIM_WITH_OPTIONAL_UNIT}\s+by\s+{_DIM_WITH_OPTIONAL_UNIT}\s+by\s+{_DIM_WITH_OPTIONAL_UNIT}",
-    re.IGNORECASE,
-)
 _BOX_KEYWORD = re.compile(r"\b(box|block|rectangular\s+block|cube)\b", re.IGNORECASE)
 _THREE_NUMS = re.compile(
     r"\b(\d+(?:\.\d+)?)\s*mm\b[^,\n]{0,20}\b(\d+(?:\.\d+)?)\s*mm\b[^,\n]{0,20}\b(\d+(?:\.\d+)?)\s*mm\b",
@@ -61,7 +52,6 @@ def match(prompt: str) -> Optional[tuple[float, float, float]]:
 def build_graph(width: float, depth: float, height: float) -> OperationGraph:
     return OperationGraph(
         schema_version="0.2",
-        part_family="box_v0",
         part_name="box",
         reasoning=f"Deterministic box fast path: {width}×{depth}×{height} mm",
         operations=[

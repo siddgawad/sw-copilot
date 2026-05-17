@@ -6,9 +6,7 @@ from models.schemas import (
     ExportFileConfig,
     ExportFileOp,
     CheckDrawingOp,
-    GenerateMacroOp,
     OperationGraph,
-    PartSketchInfo,
 )
 
 
@@ -48,7 +46,9 @@ def test_export_file_op_invalid_format():
         ExportFileOp(
             id="ef2",
             type="export_file",
-            export_file=ExportFileConfig(format="INVALID_FORMAT"),
+            export_file=ExportFileConfig(
+                format="INVALID_FORMAT",
+            ),
         )
 
 
@@ -68,12 +68,6 @@ def test_check_drawing_op():
     assert op.type == "check_drawing"
 
 
-def test_generate_macro_op():
-    op = GenerateMacroOp(id="gm1", type="generate_macro", description="Export part macro")
-    assert op.description == "Export part macro"
-    assert op.output_path is None
-
-
 def test_operation_graph_with_new_ops():
     graph = OperationGraph(
         operations=[
@@ -86,8 +80,3 @@ def test_operation_graph_with_new_ops():
     )
     assert len(graph.operations) == 4
     assert graph.schema_version == "0.2"
-
-
-def test_part_sketch_info_accepts_dimension_count():
-    sketch = PartSketchInfo(name="base_profile", entity_count=4, dimension_count=2)
-    assert sketch.dimension_count == 2

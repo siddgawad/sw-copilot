@@ -38,18 +38,10 @@ namespace SwCopilotAddin.Client
                 prompt,
                 context = new
                 {
-                    document_type   = context.DocumentType,
-                    body_count      = context.BodyCount,
-                    selected_ids    = context.SelectedEntityIds,
-                    file_path       = context.FilePath,
-                    bounding_box_mm = context.BoundingBoxMm == null
-                        ? null
-                        : new
-                        {
-                            x_mm = context.BoundingBoxMm.XMm,
-                            y_mm = context.BoundingBoxMm.YMm,
-                            z_mm = context.BoundingBoxMm.ZMm,
-                        },
+                    document_type = context.DocumentType,
+                    body_count    = context.BodyCount,
+                    selected_ids  = context.SelectedEntityIds,
+                    file_path     = context.FilePath,
                 },
                 messages = BuildHistoryPayload(history),
             };
@@ -166,14 +158,6 @@ namespace SwCopilotAddin.Client
             string body = await response.Content.ReadAsStringAsync();
             if (!response.IsSuccessStatusCode)
             {
-                if ((int)response.StatusCode == 404)
-                {
-                    throw new System.InvalidOperationException(
-                        "Backend validation endpoint /validate was not found. " +
-                        "This usually means SolidWorks is talking to an old packaged backend; stop SwCopilotBackend.exe, rebuild/reinstall the beta package, or point SW_COPILOT_BACKEND_EXE at the current backend. " +
-                        $"URL: {BaseUrl}.");
-                }
-
                 throw new System.InvalidOperationException(
                     $"Backend validation returned HTTP {(int)response.StatusCode} {response.ReasonPhrase}: {body}");
             }

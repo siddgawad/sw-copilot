@@ -370,8 +370,7 @@ namespace SwCopilotAddin.UI
 
         private static bool IsDeterministicOperationGraph(OperationGraphDto graph)
         {
-            string partFamily = graph.PartFamily ?? string.Empty;
-            return partFamily.EndsWith("_v0", StringComparison.OrdinalIgnoreCase);
+            return string.Equals(graph.PartFamily, "base_plate_v0", StringComparison.OrdinalIgnoreCase);
         }
 
         private static string BuildAssistantHistoryContent(AgentResponse response, string? runtimeResult = null)
@@ -662,12 +661,6 @@ namespace SwCopilotAddin.UI
                     if (op.LastN.HasValue) return $"Delete last {op.LastN} feature(s)";
                     if (op.FeatureIds?.Length > 0) return "Delete: " + string.Join(", ", op.FeatureIds);
                     return "Delete all features";
-                case "update_title_block":
-                    return "Update title block/custom properties";
-                case "export_file":
-                    return $"Export active document as {op.ExportFile?.Format ?? "file"}";
-                case "check_drawing":
-                    return "Check drawing for missing fields, empty sheets, and dangling dimensions";
                 case "noop":
                     return op.Message ?? "No operation";
                 default:

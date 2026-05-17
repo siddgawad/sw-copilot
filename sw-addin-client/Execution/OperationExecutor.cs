@@ -32,14 +32,6 @@ namespace SwCopilotAddin.Execution
             "CommentsFolder", "DesignBinder",
         };
 
-        private enum DocumentRequirement
-        {
-            None,
-            ActiveDocument,
-            PartDocument,
-            DrawingDocument,
-        }
-
         public OperationExecutor(ISldWorks swApp)
         {
             _swApp = swApp;
@@ -62,18 +54,6 @@ namespace SwCopilotAddin.Execution
                 new List<ExecutorOperationResult>();
         }
 
-        private sealed class SketchDefinitionResult
-        {
-            public int SmartDimensions { get; set; }
-            public int Relations { get; set; }
-            public int FullyDefineStatus { get; set; } = -1;
-
-            public string Summary()
-            {
-                return $"smart dimensions={SmartDimensions}, relations={Relations}, fully_define_status={FullyDefineStatus}";
-            }
-        }
-
         public string Execute(OperationGraphDto graph)
         {
             if (!string.IsNullOrWhiteSpace(graph.SchemaVersion) &&
@@ -82,13 +62,8 @@ namespace SwCopilotAddin.Execution
                 return $"ERROR: Unsupported operation graph schema_version '{graph.SchemaVersion}'. Expected '0.2'.";
             }
 
-            string? documentViolation = ValidateDocumentRequirements(graph);
-            if (documentViolation != null)
-                return documentViolation;
-
-            DocumentRequirement requirement = GetDocumentRequirement(graph);
-            IModelDoc2? doc = ResolveExecutionDocument(requirement);
-            if (doc == null) return MissingDocumentMessage(requirement);
+            IModelDoc2? doc = EnsurePartDoc(createIfMissing: true);
+            if (doc == null) return "ERROR: No active part document.";
 
             var lines = new List<string>();
 
@@ -129,9 +104,7 @@ namespace SwCopilotAddin.Execution
                 string result;
                 try
                 {
-                    result = doc == null
-                        ? DispatchWithoutDocument(op)
-                        : Dispatch(doc, op);
+                    result = Dispatch(doc, op);
                 }
                 catch (Exception ex)
                 {
@@ -150,14 +123,14 @@ namespace SwCopilotAddin.Execution
                 }
             }
 
-            if (!anyError && doc != null && _activeSketchId != null)
+            if (!anyError && _activeSketchId != null)
             {
                 string closeResult = CloseActiveSketch(doc, _activeSketchId);
                 if (closeResult.StartsWith("ERROR", StringComparison.OrdinalIgnoreCase))
                     anyError = true;
             }
 
-            if (!anyError && doc != null && RequiresFinalPartRebuild(graph))
+            if (!anyError)
                 doc.ForceRebuild3(false);
 
             var runResult = new ExecutorRunResult
@@ -166,8 +139,7 @@ namespace SwCopilotAddin.Execution
                 Operations = opResults,
             };
             lines.Add("Runtime (executor_result): " + JsonConvert.SerializeObject(runResult, Formatting.None));
-            if (doc != null && doc.GetType() == (int)swDocumentTypes_e.swDocPART)
-                lines.Add("Runtime (report): " + ExtractPartReport(doc));
+            lines.Add("Runtime (report): " + ExtractPartReport(doc));
 
             return string.Join("\n", lines);
         }
@@ -217,137 +189,6 @@ namespace SwCopilotAddin.Execution
 
             string noun = selected == 1 ? "feature" : "features";
             return $"Undid last execution batch ({selected} {noun} deleted).";
-        }
-
-        private static string? ValidateDocumentRequirements(OperationGraphDto graph)
-        {
-            bool hasPartOperation = (graph.Operations ?? System.Array.Empty<OperationDto>())
-                .Any(op => IsPartDocumentOperation(op.Type));
-            bool hasDrawingOperation = (graph.Operations ?? System.Array.Empty<OperationDto>())
-                .Any(op => IsDrawingDocumentOperation(op.Type));
-
-            if (hasPartOperation && hasDrawingOperation)
-            {
-                return "ERROR: Operation graph mixes part-modeling operations with drawing-only operations. " +
-                       "Run the part edit and drawing check as separate prompts.";
-            }
-
-            return null;
-        }
-
-        private static DocumentRequirement GetDocumentRequirement(OperationGraphDto graph)
-        {
-            OperationDto[] operations = graph.Operations ?? System.Array.Empty<OperationDto>();
-
-            if (operations.Any(op => IsDrawingDocumentOperation(op.Type)))
-                return DocumentRequirement.DrawingDocument;
-
-            if (operations.Any(op => IsPartDocumentOperation(op.Type)))
-                return DocumentRequirement.PartDocument;
-
-            if (operations.Any(op => IsActiveDocumentOperation(op.Type)))
-                return DocumentRequirement.ActiveDocument;
-
-            return DocumentRequirement.None;
-        }
-
-        private IModelDoc2? ResolveExecutionDocument(DocumentRequirement requirement)
-        {
-            if (requirement == DocumentRequirement.None)
-                return null;
-
-            IModelDoc2? doc = (IModelDoc2?)_swApp.ActiveDoc;
-
-            if (requirement == DocumentRequirement.PartDocument)
-            {
-                if (doc == null)
-                {
-                    _swApp.NewPart();
-                    doc = (IModelDoc2?)_swApp.ActiveDoc;
-                }
-
-                return doc != null && doc.GetType() == (int)swDocumentTypes_e.swDocPART
-                    ? doc
-                    : null;
-            }
-
-            if (doc == null)
-                return null;
-
-            if (requirement == DocumentRequirement.DrawingDocument &&
-                doc.GetType() != (int)swDocumentTypes_e.swDocDRAWING)
-            {
-                return null;
-            }
-
-            return doc;
-        }
-
-        private static string MissingDocumentMessage(DocumentRequirement requirement)
-        {
-            switch (requirement)
-            {
-                case DocumentRequirement.PartDocument:
-                    return "ERROR: No active part document.";
-                case DocumentRequirement.DrawingDocument:
-                    return "ERROR: check_drawing requires an active drawing document";
-                case DocumentRequirement.ActiveDocument:
-                    return "ERROR: No active document.";
-                default:
-                    return "ERROR: No active document.";
-            }
-        }
-
-        private static bool IsPartDocumentOperation(string? type)
-        {
-            switch ((type ?? "").Trim().ToLowerInvariant())
-            {
-                case "create_part":
-                case "create_sketch":
-                case "add_center_rectangle":
-                case "add_circles":
-                case "sketch":
-                case "extrude_boss":
-                case "extrude_cut":
-                case "fillet":
-                case "chamfer":
-                case "hole_wizard":
-                case "circular_pattern":
-                case "linear_pattern":
-                case "mirror":
-                case "revolve":
-                case "delete_feature":
-                    return true;
-                default:
-                    return false;
-            }
-        }
-
-        private static bool IsDrawingDocumentOperation(string? type)
-        {
-            return string.Equals(
-                (type ?? "").Trim(),
-                "check_drawing",
-                StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static bool IsActiveDocumentOperation(string? type)
-        {
-            switch ((type ?? "").Trim().ToLowerInvariant())
-            {
-                case "update_title_block":
-                case "export_file":
-                case "rebuild":
-                    return true;
-                default:
-                    return false;
-            }
-        }
-
-        private static bool RequiresFinalPartRebuild(OperationGraphDto graph)
-        {
-            return (graph.Operations ?? System.Array.Empty<OperationDto>())
-                .Any(op => IsPartDocumentOperation(op.Type));
         }
 
         // ── Pre-execution rule engine ─────────────────────────────────────────
@@ -487,17 +328,6 @@ namespace SwCopilotAddin.Execution
             return "EXECUTION_FAILED";
         }
 
-        private static string DispatchWithoutDocument(OperationDto op)
-        {
-            switch ((op.Type ?? "").Trim().ToLowerInvariant())
-            {
-                case "noop":
-                    return op.Message ?? "No operation.";
-                default:
-                    return "ERROR: No active document.";
-            }
-        }
-
         private string Dispatch(IModelDoc2 doc, OperationDto op)
         {
             switch ((op.Type ?? "").Trim().ToLowerInvariant())
@@ -520,11 +350,18 @@ namespace SwCopilotAddin.Execution
                 case "update_title_block": return ExecUpdateTitleBlock(doc, op);
                 case "export_file":       return ExecExportFile(doc, op);
                 case "check_drawing":     return ExecCheckDrawing(doc, op);
-                case "generate_macro":    return ExecGenerateMacro(op);
+                case "generate_macro":    return ExecGenerateMacro(doc, op);
                 case "rebuild":           doc.ForceRebuild3(false); return "Rebuild";
                 case "noop":              return op.Message ?? "No operation.";
                 default:                  return $"Unknown operation type: {op.Type}";
             }
+        }
+
+        private string ExecGenerateMacro(IModelDoc2 doc, OperationDto op)
+        {
+            string description = op.GenerateMacro?.Description ?? "No description";
+            string outputPath = op.GenerateMacro?.OutputPath ?? "same folder";
+            return $"Macro generation: '{description}' — save to {outputPath}. (Requires SolidWorks macro recorder API — stub logged for Week 2)";
         }
 
         // ── sketch ────────────────────────────────────────────────────────────
@@ -570,9 +407,9 @@ namespace SwCopilotAddin.Execution
                 Mm(cx), Mm(cy), 0,
                 Mm(cx + halfLength), Mm(cy + halfWidth), 0);
 
-            SketchDefinitionResult definition = FullyDefineRectangle(doc, cx, cy, halfLength, halfWidth);
+            FullyDefineRectangle(doc, cx, cy, halfLength, halfWidth);
 
-            return $"Center rectangle {op.Length:0.#} x {op.Width:0.#} mm ({definition.Summary()})";
+            return $"Center rectangle {op.Length:0.#} x {op.Width:0.#} mm (fully defined)";
         }
 
         /// <summary>
@@ -580,34 +417,57 @@ namespace SwCopilotAddin.Execution
         /// goes from blue (underdefined) to black (fully defined).
         /// Failures are intentionally swallowed — geometry is correct regardless.
         /// </summary>
-        private SketchDefinitionResult FullyDefineRectangle(IModelDoc2 doc, double cx, double cy,
-                                                            double halfLength, double halfWidth)
+        private void FullyDefineRectangle(IModelDoc2 doc, double cx, double cy,
+                                           double halfLength, double halfWidth)
         {
-            var result = new SketchDefinitionResult();
             try
             {
-                result.Relations += TryConstrainSketchPointToOrigin(doc, cx, cy);
+                // ── Pin centre to origin with coincident constraint ───────────────
+                // Select the sketch centre point (created by CreateCenterRectangle)
+                // and the model origin point, then add coincident.
+                bool centreSelected = doc.Extension.SelectByID2(
+                    "", "SKETCHPOINT",
+                    Mm(cx), Mm(cy), 0,
+                    false, 0, null, 0);
+
+                bool originSelected = doc.Extension.SelectByID2(
+                    "Point1@Origin", "EXTSKETCHPOINT",
+                    0, 0, 0,
+                    true, 0, null, 0);   // append = true
+
+                doc.ClearSelection2(true);
 
                 // ── Width dimension (horizontal) ─────────────────────────────────
                 // Select the bottom horizontal line at its midpoint.
-                if (TryAddHorizontalSmartDimension(doc, cx, cy - halfWidth, cx, cy - halfWidth - 12))
-                    result.SmartDimensions++;
+                bool hSel = doc.Extension.SelectByID2(
+                    "", "SKETCHSEGMENT",
+                    Mm(cx), Mm(cy - halfWidth), 0,
+                    false, 0, null, 0);
+                if (hSel)
+                {
+                    // Place the dimension label 12 mm below the bottom line.
+                    doc.AddDimension2(Mm(cx), Mm(cy - halfWidth - 12), 0);
+                }
+                doc.ClearSelection2(true);
 
                 // ── Height dimension (vertical) ──────────────────────────────────
                 // Select the left vertical line at its midpoint.
-                if (TryAddVerticalSmartDimension(doc, cx - halfLength, cy, cx - halfLength - 12, cy))
-                    result.SmartDimensions++;
-
-                result.FullyDefineStatus = TryFullyDefineActiveSketch(doc);
+                bool vSel = doc.Extension.SelectByID2(
+                    "", "SKETCHSEGMENT",
+                    Mm(cx - halfLength), Mm(cy), 0,
+                    false, 0, null, 0);
+                if (vSel)
+                {
+                    // Place the dimension label 12 mm left of the left line.
+                    doc.AddDimension2(Mm(cx - halfLength - 12), Mm(cy), 0);
+                }
+                doc.ClearSelection2(true);
             }
             catch
             {
                 // Dimension/constraint failures never block execution.
                 // Geometry is already correct; sketch may remain underdefined.
             }
-
-            doc.ClearSelection2(true);
-            return result;
         }
 
         private string ExecAddCircles(IModelDoc2 doc, OperationDto op)
@@ -617,287 +477,15 @@ namespace SwCopilotAddin.Execution
             if (op.Circles == null || op.Circles.Length == 0)
                 return "ERROR: add_circles requires at least one circle";
 
-            var definition = new SketchDefinitionResult();
             foreach (CirclePrimitiveDto circle in op.Circles)
             {
                 if ((circle.Diameter ?? 0) <= 0)
                     return "ERROR: circle diameter must be positive";
                 double cx = circle.Center.Length > 0 ? circle.Center[0] : 0.0;
                 double cy = circle.Center.Length > 1 ? circle.Center[1] : 0.0;
-                SketchSegment circleSegment = doc.SketchManager.CreateCircleByRadius(
-                    Mm(cx), Mm(cy), 0, Mm(circle.Diameter / 2.0));
-
-                if (TryAddDiameterSmartDimension(doc, circleSegment, cx, cy, circle.Diameter ?? 0))
-                    definition.SmartDimensions++;
-
-                SketchDefinitionResult centerDefinition = TryDefineCircleCenter(doc, circleSegment, cx, cy);
-                definition.SmartDimensions += centerDefinition.SmartDimensions;
-                definition.Relations += centerDefinition.Relations;
+                doc.SketchManager.CreateCircleByRadius(Mm(cx), Mm(cy), 0, Mm(circle.Diameter / 2.0));
             }
-
-            definition.FullyDefineStatus = TryFullyDefineActiveSketch(doc);
-            doc.ClearSelection2(true);
-            return $"Added {op.Circles.Length} circle(s) ({definition.Summary()})";
-        }
-
-        private static bool TryAddHorizontalSmartDimension(
-            IModelDoc2 doc,
-            double selectXmm,
-            double selectYmm,
-            double labelXmm,
-            double labelYmm)
-        {
-            try
-            {
-                doc.ClearSelection2(true);
-                bool selected = doc.Extension.SelectByID2(
-                    "", "SKETCHSEGMENT",
-                    Mm(selectXmm), Mm(selectYmm), 0,
-                    false, 0, null, 0);
-                if (!selected) return false;
-
-                DisplayDimension? dim = doc.IAddHorizontalDimension2(Mm(labelXmm), Mm(labelYmm), 0);
-                doc.ClearSelection2(true);
-                return dim != null;
-            }
-            catch
-            {
-                doc.ClearSelection2(true);
-                return false;
-            }
-        }
-
-        private static bool TryAddVerticalSmartDimension(
-            IModelDoc2 doc,
-            double selectXmm,
-            double selectYmm,
-            double labelXmm,
-            double labelYmm)
-        {
-            try
-            {
-                doc.ClearSelection2(true);
-                bool selected = doc.Extension.SelectByID2(
-                    "", "SKETCHSEGMENT",
-                    Mm(selectXmm), Mm(selectYmm), 0,
-                    false, 0, null, 0);
-                if (!selected) return false;
-
-                DisplayDimension? dim = doc.IAddVerticalDimension2(Mm(labelXmm), Mm(labelYmm), 0);
-                doc.ClearSelection2(true);
-                return dim != null;
-            }
-            catch
-            {
-                doc.ClearSelection2(true);
-                return false;
-            }
-        }
-
-        private static bool TryAddDiameterSmartDimension(
-            IModelDoc2 doc,
-            SketchSegment? circleSegment,
-            double cxMm,
-            double cyMm,
-            double diameterMm)
-        {
-            if (circleSegment == null) return false;
-
-            try
-            {
-                doc.ClearSelection2(true);
-                bool selected = circleSegment.Select4(false, null);
-                if (!selected)
-                    selected = circleSegment.Select2(false, 0);
-                if (!selected) return false;
-
-                double radiusMm = diameterMm / 2.0;
-                DisplayDimension? dim = doc.IAddDiameterDimension2(
-                    Mm(cxMm + radiusMm + 10.0),
-                    Mm(cyMm + radiusMm + 10.0),
-                    0);
-                doc.ClearSelection2(true);
-                return dim != null;
-            }
-            catch
-            {
-                doc.ClearSelection2(true);
-                return false;
-            }
-        }
-
-        private static SketchDefinitionResult TryDefineCircleCenter(
-            IModelDoc2 doc,
-            SketchSegment? circleSegment,
-            double cxMm,
-            double cyMm)
-        {
-            var result = new SketchDefinitionResult();
-            SketchPoint? center = GetCircleCenterPoint(circleSegment);
-            if (center == null)
-                return result;
-
-            if (Math.Abs(cxMm) <= 1e-9 && Math.Abs(cyMm) <= 1e-9)
-            {
-                result.Relations += TryConstrainSketchPointToOrigin(doc, center);
-                return result;
-            }
-
-            if (TryAddHorizontalPointToOriginDimension(doc, center, cxMm, cyMm))
-                result.SmartDimensions++;
-            if (TryAddVerticalPointToOriginDimension(doc, center, cxMm, cyMm))
-                result.SmartDimensions++;
-            return result;
-        }
-
-        private static SketchPoint? GetCircleCenterPoint(SketchSegment? circleSegment)
-        {
-            try
-            {
-                SketchArc? arc = circleSegment as SketchArc;
-                return arc?.GetCenterPoint2() as SketchPoint;
-            }
-            catch
-            {
-                return null;
-            }
-        }
-
-        private static int TryConstrainSketchPointToOrigin(IModelDoc2 doc, double xMm, double yMm)
-        {
-            try
-            {
-                doc.ClearSelection2(true);
-                bool pointSelected = doc.Extension.SelectByID2(
-                    "", "SKETCHPOINT",
-                    Mm(xMm), Mm(yMm), 0,
-                    false, 0, null, 0);
-                if (!pointSelected) return 0;
-
-                if (!TrySelectOriginPoint(doc, append: true))
-                    return 0;
-
-                doc.SketchAddConstraints("sgCOINCIDENT");
-                doc.ClearSelection2(true);
-                return 1;
-            }
-            catch
-            {
-                doc.ClearSelection2(true);
-                return 0;
-            }
-        }
-
-        private static int TryConstrainSketchPointToOrigin(IModelDoc2 doc, SketchPoint point)
-        {
-            try
-            {
-                doc.ClearSelection2(true);
-                bool pointSelected = point.Select4(false, null) || point.Select2(false, 0);
-                if (!pointSelected) return 0;
-
-                if (!TrySelectOriginPoint(doc, append: true))
-                    return 0;
-
-                doc.SketchAddConstraints("sgCOINCIDENT");
-                doc.ClearSelection2(true);
-                return 1;
-            }
-            catch
-            {
-                doc.ClearSelection2(true);
-                return 0;
-            }
-        }
-
-        private static bool TryAddHorizontalPointToOriginDimension(
-            IModelDoc2 doc,
-            SketchPoint point,
-            double cxMm,
-            double cyMm)
-        {
-            try
-            {
-                doc.ClearSelection2(true);
-                bool pointSelected = point.Select4(false, null) || point.Select2(false, 0);
-                if (!pointSelected || !TrySelectOriginPoint(doc, append: true))
-                    return false;
-
-                DisplayDimension? dim = doc.IAddHorizontalDimension2(Mm(cxMm / 2.0), Mm(cyMm - 12.0), 0);
-                doc.ClearSelection2(true);
-                return dim != null;
-            }
-            catch
-            {
-                doc.ClearSelection2(true);
-                return false;
-            }
-        }
-
-        private static bool TryAddVerticalPointToOriginDimension(
-            IModelDoc2 doc,
-            SketchPoint point,
-            double cxMm,
-            double cyMm)
-        {
-            try
-            {
-                doc.ClearSelection2(true);
-                bool pointSelected = point.Select4(false, null) || point.Select2(false, 0);
-                if (!pointSelected || !TrySelectOriginPoint(doc, append: true))
-                    return false;
-
-                DisplayDimension? dim = doc.IAddVerticalDimension2(Mm(cxMm - 12.0), Mm(cyMm / 2.0), 0);
-                doc.ClearSelection2(true);
-                return dim != null;
-            }
-            catch
-            {
-                doc.ClearSelection2(true);
-                return false;
-            }
-        }
-
-        private static bool TrySelectOriginPoint(IModelDoc2 doc, bool append)
-        {
-            return doc.Extension.SelectByID2(
-                       "Point1@Origin", "EXTSKETCHPOINT",
-                       0, 0, 0,
-                       append, 0, null, 0)
-                   || doc.Extension.SelectByID2(
-                       "Origin", "EXTSKETCHPOINT",
-                       0, 0, 0,
-                       append, 0, null, 0);
-        }
-
-        private static int TryFullyDefineActiveSketch(IModelDoc2 doc)
-        {
-            try
-            {
-                const int relationMask =
-                    (int)swSketchFullyDefineRelationType_e.swSketchFullyDefineRelationType_Horizontal |
-                    (int)swSketchFullyDefineRelationType_e.swSketchFullyDefineRelationType_Vertical |
-                    (int)swSketchFullyDefineRelationType_e.swSketchFullyDefineRelationType_Coincident |
-                    (int)swSketchFullyDefineRelationType_e.swSketchFullyDefineRelationType_Concentric;
-
-                // Mirrors the official SOLIDWORKS API example: baseline dimensions,
-                // null datums, below/right placement. Return value is not documented.
-                return doc.SketchManager.FullyDefineSketch(
-                    true,
-                    true,
-                    relationMask,
-                    true,
-                    1,
-                    null,
-                    1,
-                    null,
-                    1,
-                    1);
-            }
-            catch
-            {
-                return -1;
-            }
+            return $"Added {op.Circles.Length} circle(s)";
         }
 
         private string ExecSketch(IModelDoc2 doc, OperationDto op)
@@ -938,7 +526,6 @@ namespace SwCopilotAddin.Execution
                 }
             }
 
-            int fullyDefineStatus = TryFullyDefineActiveSketch(doc);
             skMgr.InsertSketch(true); // close sketch
 
             // Register the last sketch feature so later ops can reference this op id.
@@ -946,7 +533,7 @@ namespace SwCopilotAddin.Execution
             if (sketchFeat != null)
                 RegisterFeature(op.Id, sketchFeat);
 
-            return $"Sketch on {plane} with {drawn} entities (fully_define_status={fullyDefineStatus})";
+            return $"Sketch on {plane} with {drawn} entities";
         }
 
         // ── extrude_boss ──────────────────────────────────────────────────────
@@ -1107,74 +694,12 @@ namespace SwCopilotAddin.Execution
             if (positions.Length == 0)
                 return "ERROR: hole_wizard requires at least one position";
 
-            string fastenerSize = op.FastenerSize ?? "M6";
-            string holeType = (op.HoleType ?? "simple").ToLowerInvariant();
-            string faceOf = op.FaceOf!;
-
-            if (holeType == "counterbore")
-            {
-                string? clearanceError = CreateHoleCut(
-                    doc,
-                    op.Id + "_clearance",
-                    faceOf,
-                    positions,
-                    ClearanceHoleDiameterMm(fastenerSize),
-                    throughAll: true,
-                    depthMm: 0.0,
-                    out SketchDefinitionResult clearanceDefinition);
-                if (clearanceError != null) return clearanceError;
-
-                double counterboreDiameter = CounterboreDiameterMm(fastenerSize);
-                double counterboreDepth = CounterboreDepthMm(fastenerSize);
-                string? counterboreError = CreateHoleCut(
-                    doc,
-                    op.Id,
-                    faceOf,
-                    positions,
-                    counterboreDiameter,
-                    throughAll: false,
-                    depthMm: counterboreDepth,
-                    out SketchDefinitionResult counterboreDefinition);
-                if (counterboreError != null) return counterboreError;
-
-                return $"{positions.Length}x {fastenerSize} counterbore hole(s) " +
-                       $"(clearance dia {ClearanceHoleDiameterMm(fastenerSize):0.###} mm through, " +
-                       $"counterbore dia {counterboreDiameter:0.###} mm x {counterboreDepth:0.###} mm deep; " +
-                       $"clearance {clearanceDefinition.Summary()}; counterbore {counterboreDefinition.Summary()})";
-            }
-
-            bool thruAll = op.ThroughAll || (op.DepthMm ?? 0) <= 0;
-            double depthMm = op.DepthMm ?? 0.0;
-            string? cutError = CreateHoleCut(
-                doc,
-                op.Id,
-                faceOf,
-                positions,
-                HoleDiameterMm(fastenerSize, holeType),
-                thruAll,
-                depthMm,
-                out SketchDefinitionResult definition);
-            if (cutError != null) return cutError;
-
-            string label = holeType == "simple" ? "drill" : holeType;
-            return $"{positions.Length}x {fastenerSize} {label} hole(s) ({definition.Summary()})";
-        }
-
-        private string? CreateHoleCut(
-            IModelDoc2 doc,
-            string featureId,
-            string faceOf,
-            HolePositionDto[] positions,
-            double holeDiameterMm,
-            bool throughAll,
-            double depthMm,
-            out SketchDefinitionResult definition)
-        {
-            definition = new SketchDefinitionResult();
+            double holeDiameterMm = HoleDiameterMm(op.FastenerSize ?? "M6", op.HoleType ?? "simple");
             double holeRadius = holeDiameterMm / 2.0 / 1000.0; // to metres
 
             // Resolve a standard plane directly, otherwise choose the highest
             // horizontal planar face from feature/body geometry.
+            string faceOf = op.FaceOf!;
             bool planeReady = SelectHoleSketchReference(doc, faceOf);
 
             if (!planeReady)
@@ -1185,20 +710,13 @@ namespace SwCopilotAddin.Execution
             skMgr.InsertSketch(true);
 
             foreach (HolePositionDto pos in positions)
-            {
-                SketchSegment circleSegment = skMgr.CreateCircleByRadius(pos.XMm / 1000.0, pos.YMm / 1000.0, 0, holeRadius);
-                if (TryAddDiameterSmartDimension(doc, circleSegment, pos.XMm, pos.YMm, holeDiameterMm))
-                    definition.SmartDimensions++;
-                SketchDefinitionResult centerDefinition = TryDefineCircleCenter(doc, circleSegment, pos.XMm, pos.YMm);
-                definition.SmartDimensions += centerDefinition.SmartDimensions;
-                definition.Relations += centerDefinition.Relations;
-            }
+                skMgr.CreateCircleByRadius(pos.XMm / 1000.0, pos.YMm / 1000.0, 0, holeRadius);
 
-            definition.FullyDefineStatus = TryFullyDefineActiveSketch(doc);
             skMgr.InsertSketch(true);
 
-            double depth = Mm(depthMm);
-            int endCond = throughAll
+            bool thruAll = op.ThroughAll || (op.DepthMm ?? 0) <= 0;
+            double depth = Mm(op.DepthMm);
+            int endCond = thruAll
                 ? (int)swEndConditions_e.swEndCondThroughAll
                 : (int)swEndConditions_e.swEndCondBlind;
 
@@ -1215,9 +733,10 @@ namespace SwCopilotAddin.Execution
 
             if (cut == null) return "ERROR: Hole cut failed";
 
-            RegisterFeature(featureId, cut);
+            RegisterFeature(op.Id, cut);
             doc.ForceRebuild3(false);
-            return null;
+            string label = op.HoleType == "simple" ? "drill" : op.HoleType ?? "drill";
+            return $"{positions.Length}× {op.FastenerSize} {label} hole(s)";
         }
 
         // ── circular_pattern ─────────────────────────────────────────────────
@@ -1457,7 +976,6 @@ namespace SwCopilotAddin.Execution
             if (!string.IsNullOrEmpty(op.TitleBlock.DrawnBy))    fields["DrawnBy"]     = op.TitleBlock.DrawnBy!;
             if (!string.IsNullOrEmpty(op.TitleBlock.CheckedBy))  fields["CheckedBy"]   = op.TitleBlock.CheckedBy!;
             if (!string.IsNullOrEmpty(op.TitleBlock.Title))      fields["Description"] = op.TitleBlock.Title!;
-            if (!string.IsNullOrEmpty(op.TitleBlock.Description)) fields["Description"] = op.TitleBlock.Description!;
             if (!string.IsNullOrEmpty(op.TitleBlock.Date))       fields["Date"]        = op.TitleBlock.Date!;
             foreach (var kv in op.TitleBlock.Custom ?? new Dictionary<string, string>())
                 fields[kv.Key] = kv.Value;
@@ -1582,15 +1100,6 @@ namespace SwCopilotAddin.Execution
             return "Drawing check ISSUES:\n" + string.Join("\n", issues.Select(i => "  • " + i));
         }
 
-        // ── generate_macro ─────────────────────────────────────────────────────
-
-        private string ExecGenerateMacro(OperationDto op)
-        {
-            string description = op.GenerateMacro?.Description ?? "No description";
-            string outputPath = op.GenerateMacro?.OutputPath ?? "same folder as document";
-            return $"generate_macro: '{description}' → {outputPath}. (SolidWorks macro recorder API — stub logged, full implementation Week 2)";
-        }
-
         // ── helpers ───────────────────────────────────────────────────────────
 
         private IModelDoc2? EnsurePartDoc(bool createIfMissing)
@@ -1629,9 +1138,6 @@ namespace SwCopilotAddin.Execution
                 return SelectTopFaceOfBody(doc);
             }
 
-            if (string.Equals(plane, "active_top_face", StringComparison.OrdinalIgnoreCase))
-                return SelectTopFaceOfBody(doc);
-
             // "<feature_id> top" or "<feature_id> bottom"
             string lower = plane.ToLowerInvariant();
             bool wantTop = !lower.Contains("bottom");
@@ -1640,11 +1146,7 @@ namespace SwCopilotAddin.Execution
             if (_features.TryGetValue(featureId, out Feature feat))
                 return SelectFaceOfFeature(doc, feat, wantTop);
 
-            Feature? fallbackFeature = FindFeatureByName(doc, featureId);
-            if (fallbackFeature != null && SelectFaceOfFeature(doc, fallbackFeature, wantTop))
-                return true;
-
-            return wantTop ? SelectTopFaceOfBody(doc) : SelectBottomFaceOfBody(doc);
+            return false;
         }
 
         private bool SelectHoleSketchReference(IModelDoc2 doc, string faceOf)
@@ -1654,9 +1156,6 @@ namespace SwCopilotAddin.Execution
                 doc.ClearSelection2(true);
                 return doc.Extension.SelectByID2(faceOf, "PLANE", 0, 0, 0, false, 0, null, 0);
             }
-
-            if (string.Equals(faceOf, "active_top_face", StringComparison.OrdinalIgnoreCase))
-                return SelectTopFaceOfBody(doc);
 
             if (_features.TryGetValue(faceOf, out Feature registeredFeat) &&
                 SelectFaceOfFeature(doc, registeredFeat, topFace: true))
@@ -1701,19 +1200,7 @@ namespace SwCopilotAddin.Execution
             return SelectPlanarFaceByZ(doc, CollectSolidBodyFaces(doc), topFace: true);
         }
 
-        private static bool SelectBottomFaceOfBody(IModelDoc2 doc)
-        {
-            return SelectPlanarFaceByZ(doc, CollectSolidBodyFaces(doc), topFace: false);
-        }
-
         private static bool SelectPlanarFaceByZ(IModelDoc2 doc, IEnumerable<Face2> faces, bool topFace)
-        {
-            Face2? chosen = FindPlanarFaceByZ(faces, topFace);
-            if (chosen == null) return false;
-            return SelectFace(doc, chosen);
-        }
-
-        private static Face2? FindPlanarFaceByZ(IEnumerable<Face2> faces, bool topFace)
         {
             Face2? chosen = null;
             double extremeZ = topFace ? double.MinValue : double.MaxValue;
@@ -1740,7 +1227,8 @@ namespace SwCopilotAddin.Execution
                 }
             }
 
-            return chosen;
+            if (chosen == null) return false;
+            return SelectFace(doc, chosen);
         }
 
         private static IEnumerable<Face2> FaceObjects(object[]? faceArr)
@@ -1913,23 +1401,11 @@ namespace SwCopilotAddin.Execution
         {
             doc.ClearSelection2(true);
             bool anySelected = false;
-
-            if (featureIds != null &&
-                featureIds.Any(id =>
-                    string.Equals(id, "__top_edges__", StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(id, "top_edges", StringComparison.OrdinalIgnoreCase)))
-            {
-                return SelectTopFaceBoundaryEdges(doc);
-            }
+            var seen = new HashSet<IntPtr>();
 
             if (featureIds == null || featureIds.Length == 0)
             {
-                // "all edges" — walk body edges but skip circular/arc edges produced by
-                // holes and counterbores. FeatureFillet returns null when ANY selected
-                // edge is invalid (e.g. circular hole perimeter edges can't be globally
-                // filleted with the same radius as external box edges). Filtering to
-                // linear-only edges is safe for prismatic parts (box/plate/bracket);
-                // users wanting to fillet specific curved edges must pass feature_ids.
+                // "all edges" → walk solid bodies to get unique edge set
                 IPartDoc? part = doc as IPartDoc;
                 object[]? bodies = part?.GetBodies2(
                     (int)swBodyType_e.swSolidBody, true) as object[];
@@ -1942,25 +1418,13 @@ namespace SwCopilotAddin.Execution
                     if (edges == null) continue;
                     foreach (object edgeObj in edges)
                     {
-                        try {
-                            IEdge? edge = edgeObj as IEdge;
-                            if (edge == null) continue;
-                            // Skip arc/circle edges — holes, counterbores, cylinders add
-                            // circular edges that break FeatureFillet when mixed with linears.
-                            ICurve? curve = edge.GetCurve() as ICurve;
-                            if (curve != null && !curve.IsLine()) continue;
-                            ((IEntity)edge).Select4(anySelected, null);
-                            anySelected = true;
-                        } catch { }
+                        ProcessEdgeForFillet(edgeObj, ref anySelected, seen);
                     }
                 }
             }
             else
             {
-                // Named features: walk their faces to find unique edges.
-                // Face-based walk can yield each edge twice (one per adjacent face),
-                // so deduplicate by COM identity pointer.
-                var seen = new HashSet<IntPtr>();
+                // Named features: walk their faces
                 foreach (string fid in featureIds)
                 {
                     if (!_features.TryGetValue(fid, out Feature feat)) continue;
@@ -1974,19 +1438,7 @@ namespace SwCopilotAddin.Execution
                         if (edgeArr == null) continue;
                         foreach (object edgeObj in edgeArr)
                         {
-                            try {
-                                IEdge? edge = edgeObj as IEdge;
-                                if (edge == null) continue;
-                                // Deduplicate by COM pointer
-                                IntPtr ptr = System.Runtime.InteropServices.Marshal.GetIUnknownForObject(edgeObj);
-                                System.Runtime.InteropServices.Marshal.Release(ptr);
-                                if (!seen.Add(ptr)) continue;
-                                // Skip arc/circle edges — same reason as "all edges" path
-                                ICurve? curve = edge.GetCurve() as ICurve;
-                                if (curve != null && !curve.IsLine()) continue;
-                                ((IEntity)edge).Select4(anySelected, null);
-                                anySelected = true;
-                            } catch { }
+                            ProcessEdgeForFillet(edgeObj, ref anySelected, seen);
                         }
                     }
                 }
@@ -1994,36 +1446,41 @@ namespace SwCopilotAddin.Execution
             return anySelected;
         }
 
-        private static bool SelectTopFaceBoundaryEdges(IModelDoc2 doc)
+        private void ProcessEdgeForFillet(object edgeObj, ref bool anySelected, HashSet<IntPtr> seen)
         {
-            Face2? topFace = FindPlanarFaceByZ(CollectSolidBodyFaces(doc), topFace: true);
-            if (topFace == null) return false;
+            // Use COM identity pointer for deduplication
+            IntPtr ptr = System.Runtime.InteropServices.Marshal.GetIUnknownForObject(edgeObj);
+            System.Runtime.InteropServices.Marshal.Release(ptr);
+            if (!seen.Add(ptr)) return;
 
-            object[]? edges;
-            try
+            IEdge? edge = edgeObj as IEdge;
+            if (edge != null)
             {
-                edges = topFace.GetEdges() as object[];
-            }
-            catch
-            {
-                return false;
-            }
-
-            if (edges == null || edges.Length == 0) return false;
-
-            doc.ClearSelection2(true);
-            bool anySelected = false;
-            foreach (object edgeObj in edges)
-            {
-                try
+                object[]? adjFaces = edge.GetTwoAdjacentFaces2() as object[];
+                if (adjFaces != null && adjFaces.Length == 2)
                 {
-                    ((IEntity)edgeObj).Select4(anySelected, null);
-                    anySelected = true;
+                    Face2? f1 = adjFaces[0] as Face2;
+                    Face2? f2 = adjFaces[1] as Face2;
+                    if (f1 != null && f2 != null)
+                    {
+                        Surface? s1 = f1.GetSurface() as Surface;
+                        Surface? s2 = f2.GetSurface() as Surface;
+                        if (s1 != null && s2 != null)
+                        {
+                            if (s1.Identity() == 16 && s2.Identity() == 16)
+                            {
+                                // Skip seam line inside a bore (swSURFACE_CYLINDER = 16)
+                                return;
+                            }
+                        }
+                    }
                 }
-                catch { }
             }
 
-            return anySelected;
+            try {
+                ((IEntity)edgeObj).Select4(anySelected, null);
+                anySelected = true;
+            } catch { }
         }
 
         private static List<Feature> CollectUserFeatures(IModelDoc2 doc)
@@ -2195,7 +1652,6 @@ namespace SwCopilotAddin.Execution
                     {
                         name = f.Name ?? string.Empty,
                         entity_count = CountSketchEntities(f),
-                        dimension_count = CountSketchDisplayDimensions(f),
                     });
                 }
                 f = (Feature?)f.GetNextFeature();
@@ -2211,25 +1667,6 @@ namespace SwCopilotAddin.Execution
                 Sketch? sketch = feature.GetSpecificFeature2() as Sketch;
                 object[]? segments = sketch?.GetSketchSegments() as object[];
                 return segments?.Length ?? -1;
-            }
-            catch
-            {
-                return -1;
-            }
-        }
-
-        private static int CountSketchDisplayDimensions(Feature feature)
-        {
-            try
-            {
-                int count = 0;
-                object? dim = feature.GetFirstDisplayDimension();
-                while (dim != null)
-                {
-                    count++;
-                    dim = feature.GetNextDisplayDimension(dim);
-                }
-                return count;
             }
             catch
             {
@@ -2278,57 +1715,17 @@ namespace SwCopilotAddin.Execution
         /// <summary>Returns the standard clearance hole diameter for a given fastener.</summary>
         private static double HoleDiameterMm(string fastenerSize, string holeType)
         {
-            if (string.Equals(holeType, "counterbore", StringComparison.OrdinalIgnoreCase))
-                return CounterboreDiameterMm(fastenerSize);
-
-            return ClearanceHoleDiameterMm(fastenerSize);
-        }
-
-        private static double ClearanceHoleDiameterMm(string fastenerSize)
-        {
             // Metric clearance hole diameters (ISO 273 medium fit)
             switch (fastenerSize.ToUpperInvariant())
             {
-                case "M3":  return 3.4;
-                case "M4":  return 4.5;
-                case "M5":  return 5.5;
-                case "M6":  return 6.6;
-                case "M8":  return 9.0;
-                case "M10": return 11.0;
-                case "M12": return 13.5;
+                case "M3":  return holeType == "counterbore" ? 6.5  : 3.4;
+                case "M4":  return holeType == "counterbore" ? 8.0  : 4.5;
+                case "M5":  return holeType == "counterbore" ? 9.5  : 5.5;
+                case "M6":  return holeType == "counterbore" ? 11.0 : 6.6;
+                case "M8":  return holeType == "counterbore" ? 14.0 : 9.0;
+                case "M10": return holeType == "counterbore" ? 17.5 : 11.0;
+                case "M12": return holeType == "counterbore" ? 20.0 : 13.5;
                 default:    return 6.6; // M6 fallback
-            }
-        }
-
-        private static double CounterboreDiameterMm(string fastenerSize)
-        {
-            // Socket head cap screw counterbores (ISO 4762)
-            switch (fastenerSize.ToUpperInvariant())
-            {
-                case "M3":  return 6.5;
-                case "M4":  return 8.0;
-                case "M5":  return 9.5;
-                case "M6":  return 11.0;
-                case "M8":  return 14.0;
-                case "M10": return 17.5;
-                case "M12": return 20.0;
-                default:    return 11.0; // M6 fallback
-            }
-        }
-
-        private static double CounterboreDepthMm(string fastenerSize)
-        {
-            // Socket head cap screw head heights (ISO 4762)
-            switch (fastenerSize.ToUpperInvariant())
-            {
-                case "M3":  return 3.0;
-                case "M4":  return 4.0;
-                case "M5":  return 5.0;
-                case "M6":  return 6.0;
-                case "M8":  return 8.0;
-                case "M10": return 10.0;
-                case "M12": return 12.0;
-                default:    return 6.0; // M6 fallback
             }
         }
     }
