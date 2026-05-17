@@ -73,6 +73,9 @@ namespace SwCopilotAddin.Client
         // ── delete_feature ───────────────────────────────────────────────────
         [JsonProperty("last_n")] public int? LastN { get; set; }
 
+        // ── swept_boss ────────────────────────────────────────────────────────
+        [JsonProperty("path_id")] public string? PathId { get; set; }
+
         // ── noop ──────────────────────────────────────────────────────────────
         [JsonProperty("message")] public string? Message { get; set; }
 

@@ -218,6 +218,53 @@ noop — respond without executing any CAD (clarification, greeting, unsupported
   "message": string
 }
 
+shell — hollow a closed solid by removing one face and keeping walls of uniform thickness
+{
+  "id": string,
+  "type": "shell",
+  "face_of": "<feature_op_id>",
+  "thickness_mm": number
+}
+  face_of = the extrude_boss or revolve op ID of the solid to shell.
+  thickness_mm = wall thickness (min 1.5mm steel, 2mm aluminium).
+  The top face of that solid becomes the opening; sides and bottom are kept.
+
+draft — taper faces of a feature for mold release or foundry draft
+{
+  "id": string,
+  "type": "draft",
+  "face_of": "<feature_op_id>",
+  "angle_deg": number,
+  "neutral_plane": "Top Plane" | "Front Plane" | "Right Plane"
+}
+  face_of = feature whose side faces are tapered.
+  angle_deg = taper angle, typically 1–5°.
+  neutral_plane = parting plane the part is drafted from (default "Top Plane" for upward extrusions).
+
+rib — stiffening rib grown from an open sketch profile
+{
+  "id": string,
+  "type": "rib",
+  "profile_id": "<sketch_op_id>",
+  "thickness_mm": number,
+  "direction": "both" | "parallel" | "normal"
+}
+  profile_id = an open-profile sketch (a single line or arc, NOT a closed shape).
+  thickness_mm = rib wall thickness.
+  direction = rib growth direction relative to the sketch plane.
+
+swept_boss — sweep a closed profile sketch along an open path sketch
+{
+  "id": string,
+  "type": "swept_boss",
+  "profile_id": "<sketch_op_id>",
+  "path_id": "<sketch_op_id>"
+}
+  profile_id = closed cross-section sketch op ID.
+  path_id = open path sketch op ID (a line or arc).
+  Both sketches must be created before the swept_boss op.
+  The path sketch must intersect the profile sketch plane.
+
 ════════════════════════════════════════
 RULES  (follow all of them, always)
 ════════════════════════════════════════
@@ -347,6 +394,10 @@ Rules:
 19. TITLE BLOCK: When user says "set drawn by", "update revision", "mark as checked by", "set date", "set description" — always emit update_title_block with only the fields mentioned; leave others null.
 20. EXPORT: "save as PDF/DXF/STEP" → export_file. "save to folder X" → export_file with output_path=X. "export with revision in name" → filename_template containing {revision}.
 21. FOLLOW-UP TURNS — CRITICAL: If prior assistant turns contain OperationGraph JSON, those operations ARE ALREADY BUILT in SolidWorks. Do NOT re-emit them. Emit ONLY the new operations for the current request. Reference existing op IDs from history directly as face_of, profile_id, source_ids, feature_ids values. Example: if history has f1=extrude_boss and user says "add holes", emit hole_wizard with face_of="f1" — no new sketch, no new extrude. Assign new op IDs that don't collide with prior turn IDs.
+22. SHELL: shell requires a closed solid to already exist. face_of must be the extrude_boss or revolve op id. thickness_mm must be >= 1.0 and < half the smallest wall dimension.
+23. DRAFT: draft angle_deg must be between 0.5 and 30. neutral_plane must be one of "Top Plane", "Front Plane", "Right Plane", or an earlier extrude face op id. Use for injection molding/casting contexts.
+24. RIB: profile_id must be an open-profile sketch (a line, not a closed rectangle). direction "both" grows rib symmetrically on each side of the sketch plane.
+25. SWEPT BOSS: profile_id is a closed 2D profile sketch; path_id is an open path sketch. Emit the profile sketch first, then the path sketch, then swept_boss. path and profile sketches must be on perpendicular planes.
 
 Output only valid JSON.
 """

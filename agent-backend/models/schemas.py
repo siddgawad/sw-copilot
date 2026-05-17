@@ -513,6 +513,36 @@ class GenerateMacroOp(BaseModel):
     output_path: Optional[str] = None
 
 
+class ShellOp(BaseModel):
+    id:           str
+    type:         Literal["shell"] = "shell"
+    face_of:      str
+    thickness_mm: float = 2.0
+
+
+class DraftOp(BaseModel):
+    id:            str
+    type:          Literal["draft"] = "draft"
+    face_of:       str
+    angle_deg:     float = 3.0
+    neutral_plane: str   = "Top Plane"
+
+
+class RibOp(BaseModel):
+    id:           str
+    type:         Literal["rib"] = "rib"
+    profile_id:   str
+    thickness_mm: float = 3.0
+    direction:    Literal["both", "parallel", "normal"] = "both"
+
+
+class SweptBossOp(BaseModel):
+    id:         str
+    type:       Literal["swept_boss"] = "swept_boss"
+    profile_id: str
+    path_id:    str
+
+
 Operation = Annotated[
     Union[
         CreatePartOp, CreateSketchOp, AddCenterRectangleOp, AddCirclesOp,
@@ -521,6 +551,7 @@ Operation = Annotated[
         CircularPatternOp, LinearPatternOp, MirrorOp,
         RevolveOp, DeleteFeatureOp, NoopOp,
         UpdateTitleBlockOp, ExportFileOp, CheckDrawingOp, GenerateMacroOp,
+        ShellOp, DraftOp, RibOp, SweptBossOp,
     ],
     Field(discriminator="type"),
 ]

@@ -317,6 +317,10 @@ namespace SwCopilotAddin.Execution
                 case "mirror":
                 case "revolve":
                 case "delete_feature":
+                case "shell":
+                case "draft":
+                case "rib":
+                case "swept_boss":
                     return true;
                 default:
                     return false;
@@ -521,6 +525,10 @@ namespace SwCopilotAddin.Execution
                 case "export_file":       return ExecExportFile(doc, op);
                 case "check_drawing":     return ExecCheckDrawing(doc, op);
                 case "generate_macro":    return ExecGenerateMacro(op);
+                case "shell":             return ExecShell(doc, op);
+                case "draft":             return ExecDraft(doc, op);
+                case "rib":               return ExecRib(doc, op);
+                case "swept_boss":        return ExecSweptBoss(doc, op);
                 case "rebuild":           doc.ForceRebuild3(false); return "Rebuild";
                 case "noop":              return op.Message ?? "No operation.";
                 default:                  return $"Unknown operation type: {op.Type}";
@@ -1397,6 +1405,246 @@ namespace SwCopilotAddin.Execution
             return $"Revolve {op.AngleDeg ?? 360.0:0.#}°";
         }
 
+        // ── shell ─────────────────────────────────────────────────────────────
+
+        private string ExecShell(IModelDoc2 doc, OperationDto op)
+        {
+            double thickness = Mm(op.DistanceMm);
+            if (thickness <= 0) return "ERROR: shell requires distance_mm (wall thickness) > 0";
+
+            doc.ClearSelection2(true);
+
+            // Select the open face: top face of the referenced feature (or body scan fallback).
+            bool faceSelected = false;
+            if (!string.IsNullOrEmpty(op.FaceOf))
+            {
+                if (_features.TryGetValue(op.FaceOf!, out Feature shellSrc))
+                    faceSelected = SelectFaceOfFeature(doc, shellSrc, topFace: true);
+
+                if (!faceSelected)
+                    faceSelected = SelectTopFaceOfBody(doc);
+            }
+            else
+            {
+                faceSelected = SelectTopFaceOfBody(doc);
+            }
+
+            if (!faceSelected)
+                return "ERROR: shell — could not select open face";
+
+            // IModelDoc2.InsertFeatureShell(Double Thickness, Boolean Outward) — returns void.
+            // The created Feature is retrieved via FindLastFeatureOfType afterwards.
+            try
+            {
+                doc.InsertFeatureShell(thickness, false);
+            }
+            catch (Exception ex)
+            {
+                return $"ERROR: shell COM call failed — {ex.Message}";
+            }
+
+            Feature? feat = FindLastFeatureOfType(doc, "Shell");
+            if (feat == null)
+                return "ERROR: Shell failed — ensure a solid body exists and thickness is smaller than the thinnest wall";
+
+            RegisterFeature(op.Id, feat);
+            doc.ForceRebuild3(false);
+            return $"Shell thickness={op.DistanceMm:0.#} mm";
+        }
+
+        // ── draft ─────────────────────────────────────────────────────────────
+
+        private string ExecDraft(IModelDoc2 doc, OperationDto op)
+        {
+            double angleDeg = op.AngleDeg ?? 3.0;
+            double angleRad = angleDeg * Math.PI / 180.0;
+            if (angleRad <= 0) return "ERROR: draft angle_deg must be positive";
+
+            string neutralPlane = op.MirrorPlane ?? "Top Plane";
+
+            doc.ClearSelection2(true);
+
+            // Step 1: select neutral plane with mark=16 (neutral plane mark for draft).
+            bool planeSelected = doc.Extension.SelectByID2(
+                neutralPlane, "PLANE", 0, 0, 0, false, 16, null, 0);
+            if (!planeSelected)
+                return $"ERROR: draft — could not select neutral plane '{neutralPlane}'";
+
+            // Step 2: select the side faces to draft (append=true, mark=0).
+            bool faceSelected = false;
+            if (!string.IsNullOrEmpty(op.FaceOf))
+            {
+                if (_features.TryGetValue(op.FaceOf!, out Feature draftSrc))
+                {
+                    // Select all faces of the feature except the top (sketch) face — draft the sides.
+                    object[]? faceArr;
+                    try { faceArr = draftSrc.GetFaces() as object[]; } catch { faceArr = null; }
+                    if (faceArr != null)
+                    {
+                        foreach (object faceObj in faceArr)
+                        {
+                            Face2? face = faceObj as Face2;
+                            if (face == null) continue;
+                            double[]? box = GetFaceBox(face);
+                            // Skip perfectly horizontal faces (normal ~= [0,0,±1]) — draft the side walls.
+                            if (box != null && IsHorizontalPlanarFace(face, box)) continue;
+                            try
+                            {
+                                if (((IEntity)face).Select4(true, null))
+                                    faceSelected = true;
+                            }
+                            catch { }
+                        }
+                    }
+                }
+
+                if (!faceSelected)
+                    faceSelected = SelectTopFaceOfBody(doc);
+            }
+            else
+            {
+                faceSelected = SelectTopFaceOfBody(doc);
+            }
+
+            if (!faceSelected)
+                return "ERROR: draft — could not select face to draft";
+
+            // IFeatureManager.InsertMultiFaceDraft(Angle_rad, FlipDir, EdgeDraft,
+            //   PropType, IsStepDraft, IsBodyDraft) — returns Feature
+            Feature? feat;
+            try
+            {
+                feat = doc.FeatureManager.InsertMultiFaceDraft(
+                    angleRad, // Angle (radians)
+                    false,    // FlipDir
+                    false,    // EdgeDraft
+                    0,        // PropType: 0 = none
+                    false,    // IsStepDraft
+                    false);   // IsBodyDraft
+            }
+            catch (Exception ex)
+            {
+                return $"ERROR: draft COM call failed — {ex.Message}";
+            }
+
+            if (feat == null)
+                return "ERROR: Draft failed — ensure a neutral plane and draftable side faces are selected";
+
+            RegisterFeature(op.Id, feat);
+            doc.ForceRebuild3(false);
+            return $"Draft {angleDeg:0.#}° neutral={neutralPlane}";
+        }
+
+        // ── rib ───────────────────────────────────────────────────────────────
+
+        private string ExecRib(IModelDoc2 doc, OperationDto op)
+        {
+            if (string.IsNullOrEmpty(op.ProfileId))
+                return "ERROR: rib requires profile_id (open sketch)";
+
+            double thickness = Mm(op.DistanceMm);
+            if (thickness <= 0) return "ERROR: rib requires distance_mm (thickness) > 0";
+
+            doc.ClearSelection2(true);
+
+            // Select the rib profile sketch.
+            if (!SelectRegisteredSketch(doc, op.ProfileId, append: false))
+                return $"ERROR: rib — could not select sketch profile '{op.ProfileId}'";
+
+            // IFeatureManager.InsertRib(Is2Sided, ReverseThicknessDir, Thickness,
+            //   ReferenceEdgeIndex, ReverseMaterialDir, IsDrafted, DraftOutward,
+            //   DraftAngle, IsNormToSketch, IsDraftedFromWall) — returns void.
+            // Feature is retrieved via FindLastFeatureOfType afterwards.
+            try
+            {
+                doc.FeatureManager.InsertRib(
+                    false,     // Is2Sided — one-sided rib
+                    false,     // ReverseThicknessDir
+                    thickness, // Thickness
+                    0,         // ReferenceEdgeIndex (0 = use selected edge)
+                    false,     // ReverseMaterialDir
+                    false,     // IsDrafted
+                    false,     // DraftOutward
+                    0.0,       // DraftAngle
+                    true,      // IsNormToSketch — thickness normal to sketch plane
+                    false);    // IsDraftedFromWall
+            }
+            catch (Exception ex)
+            {
+                return $"ERROR: rib COM call failed — {ex.Message}";
+            }
+
+            Feature? feat = FindLastFeatureOfType(doc, "Rib");
+            if (feat == null)
+                return "ERROR: Rib failed — profile sketch must be an open contour on or near the body";
+
+            RegisterFeature(op.Id, feat);
+            doc.ForceRebuild3(false);
+            return $"Rib thickness={op.DistanceMm:0.#} mm from profile '{op.ProfileId}'";
+        }
+
+        // ── swept_boss ────────────────────────────────────────────────────────
+
+        private string ExecSweptBoss(IModelDoc2 doc, OperationDto op)
+        {
+            if (string.IsNullOrEmpty(op.ProfileId))
+                return "ERROR: swept_boss requires profile_id (closed profile sketch)";
+            if (string.IsNullOrEmpty(op.PathId))
+                return "ERROR: swept_boss requires path_id (open path sketch)";
+
+            doc.ClearSelection2(true);
+
+            // Select profile sketch (no append).
+            if (!SelectRegisteredSketch(doc, op.ProfileId, append: false))
+                return $"ERROR: swept_boss — could not select profile sketch '{op.ProfileId}'";
+
+            // Select path sketch (append=true so both are selected).
+            if (!SelectRegisteredSketch(doc, op.PathId, append: true))
+                return $"ERROR: swept_boss — could not select path sketch '{op.PathId}'";
+
+            // IFeatureManager.InsertProtrusionSwept4(Propagate, Alignment, TwistCtrlOption,
+            //   KeepTangency, BAdvancedSmoothing, StartMatchingType, EndMatchingType,
+            //   IsThinBody, Thickness1, Thickness2, ThinType, PathAlign,
+            //   Merge, UseFeatScope, UseAutoSelect, TwistAngle, BMergeSmoothFaces,
+            //   CircularProfile, CircularProfileDiameter, Direction)  — 20 params
+            Feature? feat;
+            try
+            {
+                feat = doc.FeatureManager.InsertProtrusionSwept4(
+                    false, // Propagate
+                    false, // Alignment
+                    0,     // TwistCtrlOption: 0 = none
+                    false, // KeepTangency
+                    false, // BAdvancedSmoothing
+                    0,     // StartMatchingType: 0 = none
+                    0,     // EndMatchingType: 0 = none
+                    false, // IsThinBody
+                    0.0,   // Thickness1
+                    0.0,   // Thickness2
+                    0,     // ThinType
+                    0,     // PathAlign: 0 = follow path
+                    true,  // Merge
+                    false, // UseFeatScope
+                    true,  // UseAutoSelect
+                    0.0,   // TwistAngle
+                    false, // BMergeSmoothFaces
+                    false, // CircularProfile
+                    0.0,   // CircularProfileDiameter
+                    0);    // Direction
+            }
+            catch (Exception ex)
+            {
+                return $"ERROR: swept_boss COM call failed — {ex.Message}";
+            }
+
+            if (feat == null)
+                return "ERROR: Swept Boss failed — profile must be a closed sketch, path must be an open sketch, and path must pierce the profile";
+
+            RegisterFeature(op.Id, feat);
+            doc.ForceRebuild3(false);
+            return $"Swept Boss: profile='{op.ProfileId}' along path='{op.PathId}'";
+        }
+
         // ── delete_feature ────────────────────────────────────────────────────
 
         private string ExecDeleteFeature(IModelDoc2 doc, OperationDto op)
@@ -1860,6 +2108,17 @@ namespace SwCopilotAddin.Execution
             if (!_features.TryGetValue(opId, out Feature feat)) return;
             doc.ClearSelection2(true);
             feat.Select2(false, 0);
+        }
+
+        /// <summary>
+        /// Selects a sketch registered under <paramref name="opId"/> in <see cref="_features"/>.
+        /// Returns true if the feature was found and selected.
+        /// </summary>
+        private bool SelectRegisteredSketch(IModelDoc2 doc, string? opId, bool append)
+        {
+            if (string.IsNullOrEmpty(opId)) return false;
+            if (!_features.TryGetValue(opId!, out Feature feat)) return false;
+            return feat.Select2(append, 0);
         }
 
         private bool IsActiveSketch(string? sketchId)
