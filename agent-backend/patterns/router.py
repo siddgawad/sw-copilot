@@ -13,8 +13,10 @@ from models.schemas import DocumentContext, OperationGraph
 from agents.box_v0 import try_generate as try_generate_box
 from agents.cylinder_v0 import try_generate as try_generate_cylinder
 from agents.help_v0 import try_generate as try_generate_help
+from patterns.flange import try_generate as try_generate_flange
 from patterns.followup_features import try_generate as try_generate_followup_features
 from patterns.gear import try_generate_gear
+from patterns.plate import try_generate as try_generate_plate
 from patterns.shaft import try_generate_shaft
 
 _CONTEXT_HANDLERS = [
@@ -24,10 +26,12 @@ _CONTEXT_HANDLERS = [
 _HANDLERS = [
     try_generate_help,    # must be first — greetings/help before geometry parsers
     try_generate_gear,
+    try_generate_flange,  # circular disk + bolt circle — try before cylinder
+    try_generate_plate,   # flat rectangular plate — try before box (more specific)
     try_generate_shaft,
     try_generate_box,
     try_generate_cylinder,
-    # add: try_generate_bracket, try_generate_spring, try_generate_pulley, etc.
+    # add: try_generate_bracket, try_generate_bushing, try_generate_spacer, etc.
 ]
 
 

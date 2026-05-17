@@ -52,6 +52,12 @@ class Settings(BaseSettings):
     llm_fallback_chain: str = "groq,nim,openai_compat,ollama"
     llm_disable_ollama_fallback: bool = False
 
+    # Deterministic-only mode: if true, the LLM is NEVER called.
+    # All requests that do not match a deterministic pattern produce a noop
+    # asking the user to rephrase. Use this when you do not trust any LLM
+    # provider and want the app to behave as a pure compiler.
+    llm_disabled: bool = False
+
     # ── Vector store & embeddings ────────────────────────────────────────────
     chroma_persist_dir: str     = "./chroma_db"
     chroma_collection_name: str = "engineering_standards"

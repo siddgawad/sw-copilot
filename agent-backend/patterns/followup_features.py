@@ -33,12 +33,24 @@ def try_generate(prompt: str, context: Optional[DocumentContext] = None) -> Oper
     return None
 
 
+_NEW_SHAPE_KEYWORDS = ("plate", "box", "block", "flange", "disc", "disk", "bracket",
+                       "shaft", "cylinder", "bushing", "spacer", "gear")
+
+
 def _try_corner_holes(prompt: str, context: Optional[DocumentContext]) -> OperationGraph | None:
     text = prompt.lower()
     if "corner" not in text:
         return None
     if not any(word in text for word in ("hole", "holes", "counterbore", "counterbored", "countersink", "tapped")):
         return None
+
+    # If the prompt also describes a NEW shape (plate / box / flange / etc.),
+    # this is a compound prompt that the primary-shape pattern should own.
+    # Stand down so the shape pattern (with embedded hole-at-corners support)
+    # gets the request.
+    if any(re.search(rf"\b{kw}\b", text) for kw in _NEW_SHAPE_KEYWORDS):
+        return None
+
     if not _FOUR.search(prompt):
         return _needs_input("corner hole pattern", "number of holes; say four/4 for all corners")
 

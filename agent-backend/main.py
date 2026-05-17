@@ -180,6 +180,33 @@ async def generate(req: GenerateRequest) -> GenerateResponse:
             rag_sources=[],
         )
 
+    # Deterministic-only mode: if the user disabled the LLM, refuse to call
+    # any provider and return a clear noop. This is the bulletproof setting
+    # for users who don't trust any cloud LLM provider.
+    if settings.llm_disabled:
+        no_llm_graph = OperationGraph(
+            schema_version="0.2",
+            part_name=None,
+            missing_inputs=[
+                "rephrase the request as a known pattern (box, plate, flange, "
+                "cylinder, shaft) — the LLM is disabled in this build."
+            ],
+            operations=[NoopOp(
+                id="noop1",
+                message=(
+                    "LLM is disabled (LLM_DISABLED=true). This prompt did not "
+                    "match any deterministic pattern. Try a known shape like: "
+                    "'create a 50x30x20mm box', 'plate 100x100x5mm', "
+                    "'flange 80mm OD 5mm thick', 'cylinder 40mm diameter 100mm long'."
+                ),
+            )],
+        )
+        return GenerateResponse(
+            operation_graph=no_llm_graph,
+            status_message="LLM disabled — request did not match any deterministic pattern.",
+            rag_sources=[],
+        )
+
     rag_context, rag_sources = "", []
     if rag_agent.is_relevant(req.prompt):
         rag_context, rag_sources = await run_in_threadpool(rag_agent.retrieve, req.prompt)
