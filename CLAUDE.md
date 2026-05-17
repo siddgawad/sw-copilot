@@ -262,6 +262,58 @@ Routing for the next build wave:
 *Both agents check this section at the start of every session. Cross items
 off when done. Settled items move to `docs/CHANGELOG.md`.*
 
+- [ ] **[Claude -> Codex]** DETERMINISTIC-COMPILER-V1 (2026-05-17): Backend
+  is now a deterministic NL→OperationGraph compiler that covers most common
+  engineering requests with zero LLM calls. New patterns shipped:
+  `patterns/plate.py`, `patterns/flange.py`, `patterns/bracket.py`,
+  `patterns/bushing.py`, plus `patterns/compound_features.py` which appends
+  fillet/chamfer from a single-shot compound prompt. New `LLM_DISABLED=true`
+  config flag refuses all LLM calls. Failure memory hardened (atomic writes,
+  bounded growth, PII scrubbing, dedup, corruption recovery). Multi-provider
+  free LLM chain with always-on Ollama fallback. SW feature catalog at
+  `agent-backend/knowledge/solidworks_feature_catalog.md` auto-ingested.
+  Tests: backend `335 passed, 9 skipped`. C# build `0 Warning(s), 0 Error(s)`.
+
+  **Codex action items when you return:**
+  1. **Live-verify each new shape pattern** in SolidWorks (register from
+     `C:\Projects\sw-copilot\sw-addin-client`, NOT `C:\Users\theof`):
+     - `create a 100x60x5mm plate` — sketch black/fully-defined?
+     - `flange 100mm OD 6mm thick with 6 M8 holes on 80mm PCD` — 6 holes
+       on 80mm PCD via circular_pattern?
+     - `create an L-bracket 80x60x5mm` — two perpendicular plates render?
+     - `create a bushing 30mm OD 15mm ID 40mm long` — outer cylinder with
+       concentric through-bore?
+     - `create a 100x60x10mm plate with 4 M6 holes at corners and 2mm fillet on all edges`
+       — single prompt produces complete part?
+  2. **Smart Dim popup verification.** I added
+     `_swApp.SetUserPreferenceToggle(swInputDimValOnCreate, false)` at addin
+     connect AND defensively per Execute() in `OperationExecutor.Execute()`.
+     Confirm SolidWorks no longer pops up the Modify dialog on every
+     dimension. If it still does, the toggle name may differ in SW2021 —
+     try `swInputDimValOnCreate2`.
+  3. **Plan-preview dialog skipped by default.** The MacroPreviewDialog is
+     now gated by `SW_COPILOT_REQUIRE_CONFIRM=1`. Verify the user only sees
+     their part appear, no confirm modal. Roslyn legacy path is still gated
+     by the dialog for safety.
+  4. **/feedback endpoint wired into TaskPaneHost.** When `Execute()`
+     returns a non-recoverable failure, `BackendClient.ReportFailureAsync`
+     fires fire-and-forget so the planner learns from the failure. Verify
+     by intentionally creating a failure (e.g., shell a sketch-only part)
+     then hitting `GET /learn/stats` to see the record.
+  5. **Schema compatibility for `bracket_v0` and `bushing_v0`.** Both use
+     only existing op types (create_part, create_sketch, add_center_rectangle,
+     add_circles, extrude_boss, extrude_cut, rebuild). No new ops needed in
+     OperationExecutor. But verify the C# DTO `OperationDto` deserialises
+     `add_circles` with a `circles[]` array correctly — there have been
+     drift bugs here before.
+  6. **Live-test rib + draft + swept_boss** — these were added in the
+     previous session but never verified in live SW. Test prompts:
+     - `add a 3mm rib in the middle`
+     - `add 5 degrees of draft to the side faces`
+     - `swept boss from sketch sk1 along path sk2`
+  7. **Document tested combinations** in `docs/LIVE_TEST_LOG.md`
+     (create the file). Format: prompt | result | screenshot/notes.
+
 - [x] **[Codex -> all]** SOURCE-ROOT-001: Source of truth corrected to
   `C:\Projects\sw-copilot` only. Ignore the accidental home-folder working
   copy under `C:\Users\theof` for build/register/test instructions. Codex

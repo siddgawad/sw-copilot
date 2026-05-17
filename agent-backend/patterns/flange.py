@@ -18,6 +18,7 @@ import re
 from typing import Optional
 
 from models.schemas import OperationGraph
+from patterns.compound_features import append_compound_features
 from standards.dimension_resolver import resolve_clearance_hole
 
 
@@ -193,11 +194,24 @@ def try_generate(prompt: str) -> Optional[OperationGraph]:
         bolt_size = f"M{bm.group(2)}"
         bolt_pcd_mm = float(bm.group(3))
 
-    return build_graph(
+    graph = build_graph(
         od_mm        = od_mm,
         thickness_mm = thickness_mm,
         bolt_count   = bolt_count,
         bolt_size    = bolt_size,
         bolt_pcd_mm  = bolt_pcd_mm,
         hole_type    = hole_type,
+    )
+
+    new_ops = append_compound_features(
+        [op.model_dump() if hasattr(op, "model_dump") else op for op in graph.operations],
+        prompt,
+    )
+    return OperationGraph(
+        schema_version = graph.schema_version,
+        part_family    = graph.part_family,
+        part_name      = graph.part_name,
+        reasoning      = graph.reasoning,
+        assumptions    = graph.assumptions,
+        operations     = new_ops,
     )

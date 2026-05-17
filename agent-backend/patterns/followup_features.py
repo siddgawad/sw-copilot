@@ -149,6 +149,12 @@ def _try_edge_finish(prompt: str) -> OperationGraph | None:
     if not is_chamfer and not is_fillet:
         return None
 
+    # Compound prompt with a NEW shape keyword? Stand down — the shape pattern
+    # is responsible for the entire request, including any compound fillet
+    # or chamfer clause.
+    if any(re.search(rf"\b{kw}\b", text) for kw in _NEW_SHAPE_KEYWORDS):
+        return None
+
     distance = _first_distance(prompt)
     if distance is None:
         name = "chamfer" if is_chamfer else "fillet"

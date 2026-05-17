@@ -20,6 +20,7 @@ import re
 from typing import Optional
 
 from models.schemas import OperationGraph
+from patterns.compound_features import append_compound_features
 from standards.dimension_resolver import resolve_clearance_hole, resolve_counterbore
 
 
@@ -210,7 +211,7 @@ def try_generate(prompt: str) -> Optional[OperationGraph]:
         bolt_count = _hole_count(fm.group(1), plural=True)
         bolt_size = f"M{fm.group(2)}"
 
-    return build_graph(
+    graph = build_graph(
         length=length,
         width=width,
         thickness=thickness,
@@ -218,4 +219,19 @@ def try_generate(prompt: str) -> Optional[OperationGraph]:
         bolt_count=bolt_count,
         bolt_size=bolt_size,
         hole_type=hole_type,
+    )
+
+    # Compound: if the prompt also asks for fillet / chamfer in one shot,
+    # append those ops before the final rebuild.
+    new_ops = append_compound_features(
+        [op.model_dump() if hasattr(op, "model_dump") else op for op in graph.operations],
+        prompt,
+    )
+    return OperationGraph(
+        schema_version = graph.schema_version,
+        part_family    = graph.part_family,
+        part_name      = graph.part_name,
+        reasoning      = graph.reasoning,
+        assumptions    = graph.assumptions,
+        operations     = new_ops,
     )

@@ -297,3 +297,106 @@ def test_all_deterministic_graphs_use_schema_version_0_2(prompt):
     assert graph.schema_version == "0.2", (
         f"Deterministic pattern {graph.part_family} must emit schema_version='0.2'"
     )
+
+
+# ── L-bracket / angle-bracket pattern (NEW) ───────────────────────────────────
+
+@pytest.mark.parametrize("prompt", [
+    "create an L-bracket 80x60x5mm",
+    "make a bracket 100x80x6mm",
+    "L-bracket 120x80x8mm",
+    "angle bracket 60x40x4mm",
+])
+def test_bracket_recognised(prompt):
+    graph = _run(prompt)
+    assert graph is not None, f"{prompt!r} should match bracket"
+    assert graph.part_family == "bracket_v0"
+    # Two perpendicular plates = two sketches + two extrudes
+    types = [op.type for op in graph.operations]
+    assert types.count("create_sketch") == 2
+    assert types.count("extrude_boss") == 2
+
+
+# ── Bushing pattern (NEW) ─────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("prompt", [
+    "create a bushing 30mm OD 15mm ID 40mm long",
+    "bushing 25mm outer 12mm inner 30mm long",
+    "make a bushing 40mm OD 20mm ID 50mm long",
+])
+def test_bushing_recognised(prompt):
+    graph = _run(prompt)
+    assert graph is not None, f"{prompt!r} should match bushing"
+    assert graph.part_family == "bushing_v0"
+    # Outer cylinder + inner cut = sketch+extrude_boss + sketch+extrude_cut
+    types = [op.type for op in graph.operations]
+    assert "extrude_boss" in types
+    assert "extrude_cut" in types
+
+
+def test_bushing_inner_smaller_than_outer():
+    graph = _run("bushing 30mm OD 15mm ID 40mm long")
+    assert graph is not None
+    boss = next(op for op in graph.operations if op.type == "extrude_boss")
+    assert boss.depth_mm == pytest.approx(40)
+
+
+# ── Compound features in a single prompt (NEW) ────────────────────────────────
+
+def test_compound_plate_with_holes_and_fillet():
+    """Single prompt: plate with holes AND fillet at once."""
+    graph = _run("create a 100x60x10mm plate with 4 M6 holes at corners and 2mm fillet on all edges")
+    assert graph is not None
+    assert graph.part_family == "plate_v0"
+    types = [op.type for op in graph.operations]
+    assert "hole_wizard" in types
+    assert "fillet" in types
+    fil = next(op for op in graph.operations if op.type == "fillet")
+    assert fil.radius_mm == pytest.approx(2)
+
+
+def test_compound_plate_with_chamfer_only():
+    graph = _run("create a 200x150x6mm plate with 3mm chamfer on top edges")
+    assert graph is not None
+    assert graph.part_family == "plate_v0"
+    types = [op.type for op in graph.operations]
+    assert "chamfer" in types
+    ch = next(op for op in graph.operations if op.type == "chamfer")
+    assert ch.distance_mm == pytest.approx(3)
+    assert "__top_edges__" in ch.feature_ids
+
+
+def test_compound_flange_with_bolt_circle_and_fillet():
+    graph = _run("flange 150mm OD 8mm thick with 6 M8 holes on 120mm PCD and 2mm fillet on all edges")
+    assert graph is not None
+    assert graph.part_family == "flange_v0"
+    types = [op.type for op in graph.operations]
+    assert "hole_wizard" in types
+    assert "circular_pattern" in types
+    assert "fillet" in types
+
+
+def test_compound_plate_full_house():
+    """Plate + holes + fillet + chamfer — every combination at once."""
+    graph = _run(
+        "create a 120x80x6mm plate with 4 M5 counterbored holes at corners "
+        "and 3mm fillet on all edges and 1mm chamfer on top edges"
+    )
+    assert graph is not None
+    types = [op.type for op in graph.operations]
+    assert types.count("hole_wizard") == 1
+    assert types.count("fillet") == 1
+    assert types.count("chamfer") == 1
+    # Rebuild must be last so all features get a clean recompute.
+    assert types[-1] == "rebuild"
+
+
+def test_compound_features_preserve_order():
+    """Sketches and extrudes come BEFORE the follow-up features; rebuild last."""
+    graph = _run("plate 100x100x5mm with 4 M6 holes at corners and 2mm fillet on all edges")
+    assert graph is not None
+    types = [op.type for op in graph.operations]
+    assert types.index("create_sketch") < types.index("extrude_boss")
+    assert types.index("extrude_boss") < types.index("hole_wizard")
+    assert types.index("hole_wizard") < types.index("fillet")
+    assert types.index("fillet") < types.index("rebuild")
