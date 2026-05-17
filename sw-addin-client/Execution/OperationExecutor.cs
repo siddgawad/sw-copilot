@@ -1914,8 +1914,12 @@ namespace SwCopilotAddin.Execution
 
             if (featureIds == null || featureIds.Length == 0)
             {
-                // "all edges" — IBody2.GetEdges() returns each edge exactly once;
-                // no deduplication needed when walking body edges directly.
+                // "all edges" — walk body edges but skip circular/arc edges produced by
+                // holes and counterbores. FeatureFillet returns null when ANY selected
+                // edge is invalid (e.g. circular hole perimeter edges can't be globally
+                // filleted with the same radius as external box edges). Filtering to
+                // linear-only edges is safe for prismatic parts (box/plate/bracket);
+                // users wanting to fillet specific curved edges must pass feature_ids.
                 IPartDoc? part = doc as IPartDoc;
                 object[]? bodies = part?.GetBodies2(
                     (int)swBodyType_e.swSolidBody, true) as object[];
@@ -1929,7 +1933,13 @@ namespace SwCopilotAddin.Execution
                     foreach (object edgeObj in edges)
                     {
                         try {
-                            ((IEntity)edgeObj).Select4(anySelected, null);
+                            IEdge? edge = edgeObj as IEdge;
+                            if (edge == null) continue;
+                            // Skip arc/circle edges — holes, counterbores, cylinders add
+                            // circular edges that break FeatureFillet when mixed with linears.
+                            ICurve? curve = edge.GetCurve() as ICurve;
+                            if (curve != null && !curve.IsLine()) continue;
+                            ((IEntity)edge).Select4(anySelected, null);
                             anySelected = true;
                         } catch { }
                     }
@@ -1937,8 +1947,8 @@ namespace SwCopilotAddin.Execution
             }
             else
             {
-                // Named features: use body-based edge walk for the bodies those features belong to.
-                // Face-based walks produce duplicate edges (each edge borders two faces).
+                // Named features: select only linear edges of those specific features'
+                // adjacent body. Same linear-only filter avoids hole-edge conflicts.
                 IPartDoc? part = doc as IPartDoc;
                 object[]? bodies = part?.GetBodies2((int)swBodyType_e.swSolidBody, true) as object[];
                 if (bodies != null)
@@ -1952,7 +1962,11 @@ namespace SwCopilotAddin.Execution
                         foreach (object edgeObj in edges)
                         {
                             try {
-                                ((IEntity)edgeObj).Select4(anySelected, null);
+                                IEdge? edge = edgeObj as IEdge;
+                                if (edge == null) continue;
+                                ICurve? curve = edge.GetCurve() as ICurve;
+                                if (curve != null && !curve.IsLine()) continue;
+                                ((IEntity)edge).Select4(anySelected, null);
                                 anySelected = true;
                             } catch { }
                         }
