@@ -3,6 +3,11 @@
 **Every agent reads this file before touching any code.** Update the
 **Handoff Queue** whenever you complete, break, or discover something new.
 
+**>>> CODEX: read `docs/CODEX_BRIEFING.md` FIRST — two-repo split was
+resolved 2026-05-17. Only `C:\Projects\sw-copilot` is live now. Your
+recent C# work was preserved (commit `a95f4cb`). Live-test bugs and
+deploy steps are all in that briefing. <<<**
+
 For settled task history see `docs/CHANGELOG.md`.
 For SW COM signatures see `docs/SOLIDWORKS_API_REFERENCE.md`.
 For agent routing and the local-agent task-card contract see `docs/AGENT_PLAYBOOK.md`.
@@ -597,6 +602,19 @@ off when done. Settled items move to `docs/CHANGELOG.md`.*
   `feature_ids=[]` / "all edges", filter duplicate edge entities, preferably
   apply external body edges first, and return selected edge count in runtime.
   Add a live-test gate for 2mm fillet on the v0.2 base plate.
+
+- [ ] **[Codex -> Claude]** LIVE-BUGS C# patch pass (2026-05-17, `C:\Projects\sw-copilot`):
+  1. `delete_feature` now supports robust sketch-name deletion in `ExecDeleteFeature()`:
+     case-insensitive normalized match (`Sketch3` / `sketch 3` / `Sketch_3`), and
+     explicit `"delete all sketches"` style requests now delete all `ProfileFeature`/`3DProfileFeature`.
+  2. Counterbore execution order updated in `ExecHoleWizard()` to cut counterbore pockets first
+     (one sketch/cut per pocket), then run the clearance through-cut; this avoids `FeatureCut3`
+     null failures from overlapping/tangent multi-circle pocket sketches and stale void intersections.
+  3. Cross-turn context retention fixed in `TaskPaneHost`: clarification turns that return early now
+     still call `RecordConversation(...)`, and missing-input prompts are captured into history so
+     follow-up turns keep fastener/quantity/inset context.
+  Build gate: `dotnet build SwCopilotAddin.csproj -c Release -p:Platform=x64 -p:RegisterForComInterop=false -p:OutDir=C:\Projects\sw-copilot\sw-addin-client\bin\x64\Release-beta7\net48\` -> `0 Warning(s), 0 Error(s)`.
+  Backend unchanged per protocol. Next step: elevated re-register + live C-3 retest and record pass/fail here.
 
 ---
 
