@@ -74,6 +74,14 @@ namespace SwCopilotAddin.Execution
             }
         }
 
+        private static void MergeDefinition(SketchDefinitionResult target, SketchDefinitionResult source)
+        {
+            target.SmartDimensions += source.SmartDimensions;
+            target.Relations += source.Relations;
+            if (target.FullyDefineStatus < 0 || source.FullyDefineStatus != 0)
+                target.FullyDefineStatus = source.FullyDefineStatus;
+        }
+
         public string Execute(OperationGraphDto graph)
         {
             if (!string.IsNullOrWhiteSpace(graph.SchemaVersion) &&
@@ -81,15 +89,6 @@ namespace SwCopilotAddin.Execution
             {
                 return $"ERROR: Unsupported operation graph schema_version '{graph.SchemaVersion}'. Expected '0.2'.";
             }
-
-            // Defensive: re-suppress the "Modify dimension value" dialog in case
-            // SW or another addin toggled it back on during this session.
-            try
-            {
-                _swApp.SetUserPreferenceToggle(
-                    (int)swUserPreferenceToggle_e.swInputDimValOnCreate, false);
-            }
-            catch { /* non-fatal */ }
 
             string? documentViolation = ValidateDocumentRequirements(graph);
             if (documentViolation != null)
@@ -130,6 +129,7 @@ namespace SwCopilotAddin.Execution
             _features.Clear();
             _lastCreatedFeatures.Clear();
             _activeSketchId = null;
+            HashSet<string> executionFeatureSnapshot = SnapshotFeatureNames(doc);
 
             bool anyError = false;
             var opResults = new List<ExecutorOperationResult>();
@@ -157,6 +157,25 @@ namespace SwCopilotAddin.Execution
                     anyError = true;
                     break;
                 }
+            }
+
+            if (anyError && doc != null)
+            {
+                if (_activeSketchId != null)
+                {
+                    try { doc.SketchManager.InsertSketch(true); } catch { }
+                    _activeSketchId = null;
+                }
+
+                int removed = DeleteFeaturesCreatedAfter(doc, executionFeatureSnapshot);
+                if (removed > 0)
+                {
+                    string noun = removed == 1 ? "feature" : "features";
+                    lines.Add($"Runtime cleanup: rolled back partial execution batch ({removed} {noun} deleted).");
+                }
+
+                _lastCreatedFeatures.Clear();
+                _features.Clear();
             }
 
             if (!anyError && doc != null && _activeSketchId != null)
@@ -439,6 +458,7 @@ namespace SwCopilotAddin.Execution
             string fastenerSize = op.FastenerSize ?? "M6";
             string holeType = op.HoleType ?? "simple";
             double holeDiameterMm = HoleDiameterMm(fastenerSize, holeType);
+            const double minWebMm = 0.05;
 
             for (int i = 0; i < positions.Length; i++)
             {
@@ -455,12 +475,13 @@ namespace SwCopilotAddin.Execution
                     double dx = a.XMm - b.XMm;
                     double dy = a.YMm - b.YMm;
                     double spacing = Math.Sqrt(dx * dx + dy * dy);
-                    if (spacing + 0.01 < holeDiameterMm)
+                    if (spacing <= holeDiameterMm + minWebMm)
                     {
                         violations.AppendLine(
-                            $"[{op.Id}] hole positions {i + 1} and {j + 1} overlap: " +
-                            $"center spacing {spacing:0.###} mm is less than required " +
-                            $"{holeDiameterMm:0.###} mm for {fastenerSize} {holeType}.");
+                            $"[{op.Id}] hole positions {i + 1} and {j + 1} touch or overlap: " +
+                            $"center spacing {spacing:0.###} mm must be greater than " +
+                            $"{holeDiameterMm + minWebMm:0.###} mm for a {holeDiameterMm:0.###} mm " +
+                            $"{fastenerSize} {holeType} cut.");
                     }
                 }
             }
@@ -1139,7 +1160,7 @@ namespace SwCopilotAddin.Execution
             // InsertFeatureChamfer(Options, ChamferType, Width, Angle, OtherDist, VChamDist1, VChamDist2, VChamDist3)
             Feature? chamfer = (Feature)doc.FeatureManager.InsertFeatureChamfer(
                 0,    // Options: 0 = none
-                0,    // ChamferType: 0 = equal distance
+                (int)swChamferType_e.swChamferEqualDistance,
                 dist, // Width
                 0.0,  // Angle (unused for equal-distance)
                 0.0,  // OtherDist
@@ -1172,26 +1193,14 @@ namespace SwCopilotAddin.Execution
 
             if (holeType == "counterbore")
             {
-                // Cut the COUNTERBORE POCKET FIRST in solid material. If we cut the smaller
-                // clearance through-hole first, the larger counterbore circle on top of it
-                // overlaps existing void → FeatureCut3 returns null on SolidWorks 2021.
                 double counterboreDiameter = CounterboreDiameterMm(fastenerSize);
-                double counterboreDepth = CounterboreDepthMm(fastenerSize);
-                string? counterboreError = CreateHoleCut(
-                    doc,
-                    op.Id + "_counterbore",
-                    faceOf,
-                    positions,
-                    counterboreDiameter,
-                    throughAll: false,
-                    depthMm: counterboreDepth,
-                    out SketchDefinitionResult counterboreDefinition);
-                if (counterboreError != null) return counterboreError;
+                string? geometryError = ValidateHoleCutAgainstCurrentPart(
+                    doc, positions, counterboreDiameter, fastenerSize, holeType);
+                if (geometryError != null) return geometryError;
 
-                // Then cut the smaller clearance hole through-all from the pocket floor down.
                 string? clearanceError = CreateHoleCut(
                     doc,
-                    op.Id,
+                    op.Id + "_clearance",
                     faceOf,
                     positions,
                     ClearanceHoleDiameterMm(fastenerSize),
@@ -1200,20 +1209,43 @@ namespace SwCopilotAddin.Execution
                     out SketchDefinitionResult clearanceDefinition);
                 if (clearanceError != null) return clearanceError;
 
+                double counterboreDepth = CounterboreDepthMm(fastenerSize);
+                var counterboreDefinition = new SketchDefinitionResult();
+                for (int i = 0; i < positions.Length; i++)
+                {
+                    string counterboreFeatureId = i == 0 ? op.Id : $"{op.Id}_counterbore_{i + 1}";
+                    string? counterboreError = CreateHoleCut(
+                        doc,
+                        counterboreFeatureId,
+                        faceOf,
+                        new[] { positions[i] },
+                        counterboreDiameter,
+                        throughAll: false,
+                        depthMm: counterboreDepth,
+                        out SketchDefinitionResult singleCounterboreDefinition);
+                    MergeDefinition(counterboreDefinition, singleCounterboreDefinition);
+                    if (counterboreError != null) return counterboreError;
+                }
+
                 return $"{positions.Length}x {fastenerSize} counterbore hole(s) " +
-                       $"(counterbore dia {counterboreDiameter:0.###} mm x {counterboreDepth:0.###} mm deep then " +
-                       $"clearance dia {ClearanceHoleDiameterMm(fastenerSize):0.###} mm through; " +
-                       $"counterbore {counterboreDefinition.Summary()}; clearance {clearanceDefinition.Summary()})";
+                       $"(clearance dia {ClearanceHoleDiameterMm(fastenerSize):0.###} mm through, " +
+                       $"counterbore dia {counterboreDiameter:0.###} mm x {counterboreDepth:0.###} mm deep; " +
+                       $"clearance {clearanceDefinition.Summary()}; counterbore {counterboreDefinition.Summary()})";
             }
 
             bool thruAll = op.ThroughAll || (op.DepthMm ?? 0) <= 0;
             double depthMm = op.DepthMm ?? 0.0;
+            double holeDiameter = HoleDiameterMm(fastenerSize, holeType);
+            string? simpleGeometryError = ValidateHoleCutAgainstCurrentPart(
+                doc, positions, holeDiameter, fastenerSize, holeType);
+            if (simpleGeometryError != null) return simpleGeometryError;
+
             string? cutError = CreateHoleCut(
                 doc,
                 op.Id,
                 faceOf,
                 positions,
-                HoleDiameterMm(fastenerSize, holeType),
+                holeDiameter,
                 thruAll,
                 depthMm,
                 out SketchDefinitionResult definition);
@@ -1234,55 +1266,140 @@ namespace SwCopilotAddin.Execution
             out SketchDefinitionResult definition)
         {
             definition = new SketchDefinitionResult();
+            HashSet<string> featureSnapshot = SnapshotFeatureNames(doc);
             double holeRadius = holeDiameterMm / 2.0 / 1000.0; // to metres
 
-            // Resolve a standard plane directly, otherwise choose the highest
-            // horizontal planar face from feature/body geometry.
-            bool planeReady = SelectHoleSketchReference(doc, faceOf);
-
-            if (!planeReady)
-                return $"ERROR: Could not select sketch plane for holes (face_of='{faceOf}')";
-
-            // Draw all hole circles in one sketch.
-            SketchManager skMgr = doc.SketchManager;
-            skMgr.InsertSketch(true);
-
-            foreach (HolePositionDto pos in positions)
+            try
             {
-                SketchSegment circleSegment = skMgr.CreateCircleByRadius(pos.XMm / 1000.0, pos.YMm / 1000.0, 0, holeRadius);
-                if (TryAddDiameterSmartDimension(doc, circleSegment, pos.XMm, pos.YMm, holeDiameterMm))
-                    definition.SmartDimensions++;
-                SketchDefinitionResult centerDefinition = TryDefineCircleCenter(doc, circleSegment, pos.XMm, pos.YMm);
-                definition.SmartDimensions += centerDefinition.SmartDimensions;
-                definition.Relations += centerDefinition.Relations;
+                // Resolve a standard plane directly, otherwise choose the highest
+                // horizontal planar face from feature/body geometry.
+                bool planeReady = SelectHoleSketchReference(doc, faceOf);
+
+                if (!planeReady)
+                    return $"ERROR: Could not select sketch plane for holes (face_of='{faceOf}')";
+
+                // Draw all hole circles in one sketch.
+                SketchManager skMgr = doc.SketchManager;
+                skMgr.InsertSketch(true);
+
+                foreach (HolePositionDto pos in positions)
+                {
+                    SketchSegment circleSegment = skMgr.CreateCircleByRadius(pos.XMm / 1000.0, pos.YMm / 1000.0, 0, holeRadius);
+                    if (TryAddDiameterSmartDimension(doc, circleSegment, pos.XMm, pos.YMm, holeDiameterMm))
+                        definition.SmartDimensions++;
+                    SketchDefinitionResult centerDefinition = TryDefineCircleCenter(doc, circleSegment, pos.XMm, pos.YMm);
+                    definition.SmartDimensions += centerDefinition.SmartDimensions;
+                    definition.Relations += centerDefinition.Relations;
+                }
+
+                definition.FullyDefineStatus = TryFullyDefineActiveSketch(doc);
+                if (definition.FullyDefineStatus != 0)
+                    definition.Relations += TryFixActiveSketchSegments(doc);
+                skMgr.InsertSketch(true);
+
+                double depth = Mm(depthMm);
+                int endCond = throughAll
+                    ? (int)swEndConditions_e.swEndCondThroughAll
+                    : (int)swEndConditions_e.swEndCondBlind;
+
+                Feature? cut = doc.FeatureManager.FeatureCut3(
+                    true, false, false,
+                    endCond,
+                    (int)swEndConditions_e.swEndCondBlind,
+                    depth, 0.0,
+                    false, false, false, false,
+                    0.0, 0.0,
+                    false, false, false, false,
+                    false, true, true, true, true, false,
+                    0, 0.0, false);
+
+                if (cut == null)
+                {
+                    DeleteFeaturesCreatedAfter(doc, featureSnapshot);
+                    return "ERROR: Hole cut failed";
+                }
+
+                RegisterFeature(featureId, cut);
+                doc.ForceRebuild3(false);
+                return null;
+            }
+            catch (Exception ex)
+            {
+                DeleteFeaturesCreatedAfter(doc, featureSnapshot);
+                return "ERROR: Hole cut failed: " + ex.Message;
+            }
+        }
+
+        private static string? ValidateHoleCutAgainstCurrentPart(
+            IModelDoc2 doc,
+            HolePositionDto[] positions,
+            double cutDiameterMm,
+            string fastenerSize,
+            string holeType)
+        {
+            const double minWebMm = 0.05;
+            for (int i = 0; i < positions.Length; i++)
+            {
+                for (int j = i + 1; j < positions.Length; j++)
+                {
+                    double dx = positions[i].XMm - positions[j].XMm;
+                    double dy = positions[i].YMm - positions[j].YMm;
+                    double spacing = Math.Sqrt(dx * dx + dy * dy);
+                    if (spacing <= cutDiameterMm + minWebMm)
+                    {
+                        return $"ERROR: Hole layout conflicts with current measurements: positions {i + 1} and {j + 1} " +
+                               $"are {spacing:0.###} mm apart, but a {cutDiameterMm:0.###} mm {fastenerSize} " +
+                               $"{holeType} cut needs more than {cutDiameterMm + minWebMm:0.###} mm center spacing.";
+                    }
+                }
             }
 
-            definition.FullyDefineStatus = TryFullyDefineActiveSketch(doc);
-            if (definition.FullyDefineStatus != 0)
-                definition.Relations += TryFixActiveSketchSegments(doc);
-            skMgr.InsertSketch(true);
+            if (!TryGetPartXyBoundsMm(doc, out double xMin, out double yMin, out double xMax, out double yMax))
+                return null;
 
-            double depth = Mm(depthMm);
-            int endCond = throughAll
-                ? (int)swEndConditions_e.swEndCondThroughAll
-                : (int)swEndConditions_e.swEndCondBlind;
+            double radius = cutDiameterMm / 2.0;
+            const double toleranceMm = 0.01;
+            for (int i = 0; i < positions.Length; i++)
+            {
+                HolePositionDto pos = positions[i];
+                if (pos.XMm - radius < xMin - toleranceMm ||
+                    pos.XMm + radius > xMax + toleranceMm ||
+                    pos.YMm - radius < yMin - toleranceMm ||
+                    pos.YMm + radius > yMax + toleranceMm)
+                {
+                    return $"ERROR: Hole layout conflicts with current part bounds: position {i + 1} at " +
+                           $"({pos.XMm:0.###}, {pos.YMm:0.###}) mm with {cutDiameterMm:0.###} mm cut " +
+                           $"does not fit inside current XY bounds [{xMin:0.###}, {xMax:0.###}] x " +
+                           $"[{yMin:0.###}, {yMax:0.###}] mm.";
+                }
+            }
 
-            Feature? cut = doc.FeatureManager.FeatureCut3(
-                true, false, false,
-                endCond,
-                (int)swEndConditions_e.swEndCondBlind,
-                depth, 0.0,
-                false, false, false, false,
-                0.0, 0.0,
-                false, false, false, false,
-                false, true, true, true, true, false,
-                0, 0.0, false);
-
-            if (cut == null) return "ERROR: Hole cut failed";
-
-            RegisterFeature(featureId, cut);
-            doc.ForceRebuild3(false);
             return null;
+        }
+
+        private static bool TryGetPartXyBoundsMm(
+            IModelDoc2 doc,
+            out double xMin,
+            out double yMin,
+            out double xMax,
+            out double yMax)
+        {
+            xMin = yMin = xMax = yMax = 0.0;
+
+            IPartDoc? part = doc as IPartDoc;
+            object[]? bodies = part?.GetBodies2((int)swBodyType_e.swSolidBody, true) as object[];
+            if (bodies == null || bodies.Length == 0)
+                return false;
+
+            double[]? box = GetCombinedBodyBox(bodies);
+            if (box == null || box.Length < 6)
+                return false;
+
+            xMin = box[0] * 1000.0;
+            yMin = box[1] * 1000.0;
+            xMax = box[3] * 1000.0;
+            yMax = box[4] * 1000.0;
+            return true;
         }
 
         // ── circular_pattern ─────────────────────────────────────────────────
@@ -1466,9 +1583,8 @@ namespace SwCopilotAddin.Execution
 
         private string ExecShell(IModelDoc2 doc, OperationDto op)
         {
-            double thicknessMm = op.ThicknessMm ?? op.DistanceMm ?? 0;
-            double thickness = Mm(thicknessMm);
-            if (thickness <= 0) return "ERROR: shell requires thickness_mm (wall thickness) > 0";
+            double thickness = Mm(op.DistanceMm);
+            if (thickness <= 0) return "ERROR: shell requires distance_mm (wall thickness) > 0";
 
             doc.ClearSelection2(true);
 
@@ -1507,7 +1623,7 @@ namespace SwCopilotAddin.Execution
 
             RegisterFeature(op.Id, feat);
             doc.ForceRebuild3(false);
-            return $"Shell thickness={thicknessMm:0.#} mm";
+            return $"Shell thickness={op.DistanceMm:0.#} mm";
         }
 
         // ── draft ─────────────────────────────────────────────────────────────
@@ -1518,7 +1634,7 @@ namespace SwCopilotAddin.Execution
             double angleRad = angleDeg * Math.PI / 180.0;
             if (angleRad <= 0) return "ERROR: draft angle_deg must be positive";
 
-            string neutralPlane = op.NeutralPlane ?? op.MirrorPlane ?? "Top Plane";
+            string neutralPlane = op.MirrorPlane ?? "Top Plane";
 
             doc.ClearSelection2(true);
 
@@ -1600,9 +1716,8 @@ namespace SwCopilotAddin.Execution
             if (string.IsNullOrEmpty(op.ProfileId))
                 return "ERROR: rib requires profile_id (open sketch)";
 
-            double thicknessMm = op.ThicknessMm ?? op.DistanceMm ?? 0;
-            double thickness = Mm(thicknessMm);
-            if (thickness <= 0) return "ERROR: rib requires thickness_mm (thickness) > 0";
+            double thickness = Mm(op.DistanceMm);
+            if (thickness <= 0) return "ERROR: rib requires distance_mm (thickness) > 0";
 
             doc.ClearSelection2(true);
 
@@ -1639,7 +1754,7 @@ namespace SwCopilotAddin.Execution
 
             RegisterFeature(op.Id, feat);
             doc.ForceRebuild3(false);
-            return $"Rib thickness={thicknessMm:0.#} mm from profile '{op.ProfileId}'";
+            return $"Rib thickness={op.DistanceMm:0.#} mm from profile '{op.ProfileId}'";
         }
 
         // ── swept_boss ────────────────────────────────────────────────────────
@@ -2221,6 +2336,109 @@ namespace SwCopilotAddin.Execution
             catch { }
 
             _lastCreatedFeatures.Add(feature);
+        }
+
+        private static HashSet<string> SnapshotFeatureNames(IModelDoc2 doc)
+        {
+            var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            Feature? feature = null;
+            try
+            {
+                feature = (Feature)doc.FirstFeature();
+            }
+            catch
+            {
+                return names;
+            }
+
+            while (feature != null)
+            {
+                try
+                {
+                    string name = feature.Name;
+                    if (!string.IsNullOrWhiteSpace(name))
+                        names.Add(name);
+                }
+                catch { }
+
+                try
+                {
+                    feature = (Feature)feature.GetNextFeature();
+                }
+                catch
+                {
+                    break;
+                }
+            }
+
+            return names;
+        }
+
+        private static int DeleteFeaturesCreatedAfter(IModelDoc2 doc, HashSet<string> snapshot)
+        {
+            var toDelete = new List<Feature>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            Feature? feature = null;
+            try
+            {
+                feature = (Feature)doc.FirstFeature();
+            }
+            catch
+            {
+                return 0;
+            }
+
+            while (feature != null)
+            {
+                try
+                {
+                    string name = feature.Name;
+                    string type = feature.GetTypeName2() ?? "";
+                    if (!string.IsNullOrWhiteSpace(name) &&
+                        !snapshot.Contains(name) &&
+                        !_systemTypes.Contains(type) &&
+                        seen.Add(name))
+                    {
+                        toDelete.Add(feature);
+                    }
+                }
+                catch { }
+
+                try
+                {
+                    feature = (Feature)feature.GetNextFeature();
+                }
+                catch
+                {
+                    break;
+                }
+            }
+
+            if (toDelete.Count == 0)
+                return 0;
+
+            doc.ClearSelection2(true);
+            int selected = 0;
+            foreach (Feature item in toDelete.AsEnumerable().Reverse())
+            {
+                try
+                {
+                    if (item.Select2(selected > 0, 0))
+                        selected++;
+                }
+                catch { }
+            }
+
+            if (selected == 0)
+                return 0;
+
+            int opts = (int)swDeleteSelectionOptions_e.swDelete_Absorbed |
+                       (int)swDeleteSelectionOptions_e.swDelete_Children;
+            doc.Extension.DeleteSelection2(opts);
+            doc.ClearSelection2(true);
+            doc.ForceRebuild3(false);
+            return selected;
         }
 
         /// <summary>

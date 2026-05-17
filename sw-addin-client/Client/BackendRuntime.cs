@@ -4,12 +4,18 @@ using System.IO;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+using Newtonsoft.Json;
 
 namespace SwCopilotAddin.Client
 {
     internal static class BackendRuntime
     {
         private const string BackendExeName = "SwCopilotBackend.exe";
+        private const string CurrentVersion = "0.1.0";
+        private static readonly HttpClient GitHubHttp = new HttpClient
+        {
+            Timeout = System.TimeSpan.FromSeconds(20),
+        };
         private static readonly SemaphoreSlim StartupGate = new SemaphoreSlim(1, 1);
 
         public static string TokenPath => Path.Combine(
@@ -65,6 +71,54 @@ namespace SwCopilotAddin.Client
             }
 
             return token;
+        }
+
+        public static string? GetReleaseRepository()
+        {
+            string? repo = Environment.GetEnvironmentVariable("SW_COPILOT_GITHUB_REPO");
+            if (!string.IsNullOrWhiteSpace(repo))
+                return repo.Trim();
+
+            repo = Environment.GetEnvironmentVariable("SW_COPILOT_RELEASE_REPO");
+            if (!string.IsNullOrWhiteSpace(repo))
+                return repo.Trim();
+
+            return null;
+        }
+
+        public static async Task<GitHubReleaseInfo?> CheckForUpdateAsync()
+        {
+            string repo = (GetReleaseRepository() ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(repo))
+                return null;
+
+            string url = $"https://api.github.com/repos/{repo}/releases/latest";
+
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.UserAgent.ParseAdd("SwCopilotAddin/0.1.0");
+            request.Headers.Accept.ParseAdd("application/vnd.github+json");
+            request.Headers.TryAddWithoutValidation("X-GitHub-Api-Version", "2022-11-28");
+
+            using HttpResponseMessage response = await GitHubHttp.SendAsync(request).ConfigureAwait(false);
+            string body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+                return null;
+
+            GitHubReleasePayload? payload = JsonConvert.DeserializeObject<GitHubReleasePayload>(body);
+            string latestTag = NormalizeTag(payload?.TagName) ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(latestTag))
+                return null;
+
+            if (!IsNewerVersion(latestTag, CurrentVersion))
+                return null;
+
+            return new GitHubReleaseInfo
+            {
+                Version = latestTag,
+                Url = string.IsNullOrWhiteSpace(payload?.HtmlUrl)
+                    ? $"https://github.com/{repo}/releases/latest"
+                    : payload!.HtmlUrl!,
+            };
         }
 
         private static async Task<bool> TryHealthAsync(HttpClient http, string baseUrl)
@@ -125,5 +179,40 @@ namespace SwCopilotAddin.Client
 
             Process.Start(startInfo);
         }
+
+        private static string? NormalizeTag(string? tag)
+        {
+            if (string.IsNullOrWhiteSpace(tag))
+                return null;
+
+            string value = tag!.Trim();
+            if (value.StartsWith("v", StringComparison.OrdinalIgnoreCase))
+                value = value.Substring(1);
+            return value;
+        }
+
+        private static bool IsNewerVersion(string candidate, string current)
+        {
+            if (!Version.TryParse(candidate, out Version? candidateVersion))
+                return false;
+            if (!Version.TryParse(current, out Version? currentVersion))
+                return false;
+            return candidateVersion > currentVersion;
+        }
+
+        private sealed class GitHubReleasePayload
+        {
+            [JsonProperty("tag_name")]
+            public string? TagName { get; set; }
+
+            [JsonProperty("html_url")]
+            public string? HtmlUrl { get; set; }
+        }
+    }
+
+    public sealed class GitHubReleaseInfo
+    {
+        public string Version { get; set; } = string.Empty;
+        public string Url { get; set; } = string.Empty;
     }
 }
