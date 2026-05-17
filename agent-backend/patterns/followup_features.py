@@ -65,9 +65,22 @@ def _try_corner_holes(prompt: str, context: Optional[DocumentContext]) -> Operat
 
     diameter = _hole_outer_diameter(fastener, hole_type)
     minimum_inset = (diameter / 2.0) + 1.0
+
+    # Inset must also keep adjacent hole centers at least `diameter` apart.
+    # For 4 corner holes the limiting dimension is the shorter box side.
+    max_inset_for_spacing = (min(x_size, y_size) - diameter) / 2.0
+    if max_inset_for_spacing < minimum_inset:
+        return _needs_input(
+            "corner hole pattern",
+            f"{fastener} {hole_type} holes (outer diameter {diameter:g} mm) cannot fit in {x_size:g} x {y_size:g} mm — box too small",
+        )
+
     if inset < minimum_inset:
         inset = minimum_inset
         inset_source = "minimum edge clearance"
+    if inset > max_inset_for_spacing:
+        inset = max_inset_for_spacing
+        inset_source = "tightest inset for 4-corner spacing"
 
     if x_size <= 2 * inset or y_size <= 2 * inset:
         return _needs_input(

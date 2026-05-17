@@ -2173,12 +2173,18 @@ namespace SwCopilotAddin.Execution
             doc.ClearSelection2(true);
             bool anySelected = false;
 
+            // FeatureFillet requires edges selected with Mark=1.
+            // Using null or Mark=0 causes FeatureFillet to return null even on valid geometry.
+            ISelectionMgr selMgr = doc.ISelectionManager;
+            SelectData selData = selMgr.CreateSelectData();
+            selData.Mark = 1;
+
             if (featureIds != null &&
                 featureIds.Any(id =>
                     string.Equals(id, "__top_edges__", StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(id, "top_edges", StringComparison.OrdinalIgnoreCase)))
             {
-                return SelectTopFaceBoundaryEdges(doc);
+                return SelectTopFaceBoundaryEdges(doc, selData);
             }
 
             if (featureIds == null || featureIds.Length == 0)
@@ -2208,7 +2214,7 @@ namespace SwCopilotAddin.Execution
                             // circular edges that break FeatureFillet when mixed with linears.
                             ICurve? curve = edge.GetCurve() as ICurve;
                             if (curve != null && !curve.IsLine()) continue;
-                            ((IEntity)edge).Select4(anySelected, null);
+                            ((IEntity)edge).Select4(anySelected, selData);
                             anySelected = true;
                         } catch { }
                     }
@@ -2243,7 +2249,7 @@ namespace SwCopilotAddin.Execution
                                 // Skip arc/circle edges — same reason as "all edges" path
                                 ICurve? curve = edge.GetCurve() as ICurve;
                                 if (curve != null && !curve.IsLine()) continue;
-                                ((IEntity)edge).Select4(anySelected, null);
+                                ((IEntity)edge).Select4(anySelected, selData);
                                 anySelected = true;
                             } catch { }
                         }
@@ -2253,7 +2259,7 @@ namespace SwCopilotAddin.Execution
             return anySelected;
         }
 
-        private static bool SelectTopFaceBoundaryEdges(IModelDoc2 doc)
+        private static bool SelectTopFaceBoundaryEdges(IModelDoc2 doc, SelectData? selData = null)
         {
             Face2? topFace = FindPlanarFaceByZ(CollectSolidBodyFaces(doc), topFace: true);
             if (topFace == null) return false;
@@ -2276,7 +2282,7 @@ namespace SwCopilotAddin.Execution
             {
                 try
                 {
-                    ((IEntity)edgeObj).Select4(anySelected, null);
+                    ((IEntity)edgeObj).Select4(anySelected, selData);
                     anySelected = true;
                 }
                 catch { }
