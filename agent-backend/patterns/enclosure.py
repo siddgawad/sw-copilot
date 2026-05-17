@@ -70,7 +70,10 @@ def try_generate(prompt: str) -> Optional[OperationGraph]:
 
     operations: list[dict] = [
         {"id": "p1",  "type": "create_part"},
-        {"id": "sk1", "type": "create_sketch",        "plane": "Top Plane", "sketch_id": "sk1"},
+        # Sketch on Front Plane (XY) so the body extrudes in +Z. Top face is
+        # the highest-Z face — which is what the C# SelectTopFaceOfBody picks
+        # for shell open-face and corner-hole placement.
+        {"id": "sk1", "type": "create_sketch",        "plane": "Front Plane", "sketch_id": "sk1"},
         {"id": "r1",  "type": "add_center_rectangle", "sketch_id": "sk1",
          "center": [0.0, 0.0], "length": length, "width": width},
         {"id": "e1",  "type": "extrude_boss",         "profile_id": "sk1", "depth_mm": height},

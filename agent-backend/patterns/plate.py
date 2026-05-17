@@ -79,9 +79,13 @@ def _hole_count(token: str | None, plural: bool = False) -> int:
 
 
 def _sketch_plane(prompt: str) -> str:
+    # Default: Front Plane (XY). Extrude direction is +Z, so the body's bbox is
+    # length × width × thickness on (X, Y, Z) respectively. The C# executor's
+    # SelectTopFaceOfBody picks the highest-Z face, which is the plate's top
+    # face. Hole positions in (x_mm, y_mm) then map directly to world (X, Y).
     m = _PLANE_HINT.search(prompt)
     if not m:
-        return "Top Plane"
+        return "Front Plane"
     keyword = m.group(1).lower()
     return {"top": "Top Plane", "front": "Front Plane", "right": "Right Plane"}[keyword]
 
@@ -125,7 +129,7 @@ def build_graph(
     length: float,
     width: float,
     thickness: float,
-    plane: str = "Top Plane",
+    plane: str = "Front Plane",
     bolt_count: int = 0,
     bolt_size: str = "M6",
     hole_type: str = "simple",
