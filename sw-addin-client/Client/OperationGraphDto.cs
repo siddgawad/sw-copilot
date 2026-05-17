@@ -4,13 +4,15 @@ namespace SwCopilotAddin.Client
 {
     public sealed class OperationGraphDto
     {
-        [JsonProperty("schema_version")] public string?        SchemaVersion { get; set; }
-        [JsonProperty("trace_id")]       public string?        TraceId       { get; set; }
-        [JsonProperty("part_family")]    public string?        PartFamily    { get; set; }
-        [JsonProperty("part_name")]      public string?        PartName      { get; set; }
-        [JsonProperty("operations")]     public OperationDto[] Operations    { get; set; } = System.Array.Empty<OperationDto>();
-        [JsonProperty("missing_inputs")] public string[]       MissingInputs { get; set; } = System.Array.Empty<string>();
-        [JsonProperty("assumptions")]    public string[]       Assumptions   { get; set; } = System.Array.Empty<string>();
+        [JsonProperty("schema_version")]       public string?               SchemaVersion       { get; set; }
+        [JsonProperty("trace_id")]             public string?               TraceId             { get; set; }
+        [JsonProperty("part_family")]          public string?               PartFamily          { get; set; }
+        [JsonProperty("part_name")]            public string?               PartName            { get; set; }
+        [JsonProperty("reasoning")]            public string?               Reasoning           { get; set; }
+        [JsonProperty("operations")]           public OperationDto[]        Operations          { get; set; } = System.Array.Empty<OperationDto>();
+        [JsonProperty("missing_inputs")]       public string[]              MissingInputs       { get; set; } = System.Array.Empty<string>();
+        [JsonProperty("assumptions")]          public string[]              Assumptions         { get; set; } = System.Array.Empty<string>();
+        [JsonProperty("manufacturing_intent")] public ManufacturingIntentDto ManufacturingIntent { get; set; } = new ManufacturingIntentDto();
     }
 
     /// <summary>
@@ -23,10 +25,12 @@ namespace SwCopilotAddin.Client
         [JsonProperty("type")] public string Type { get; set; } = "";
 
         // ── sketch ────────────────────────────────────────────────────────────
-        [JsonProperty("plane")]      public string?           Plane      { get; set; }
-        [JsonProperty("sketch_id")]  public string?           SketchId   { get; set; }
-        [JsonProperty("entities")]   public SketchEntityDto[] Entities   { get; set; } = System.Array.Empty<SketchEntityDto>();
-        [JsonProperty("named_dims")] public NamedDimDto[]     NamedDims  { get; set; } = System.Array.Empty<NamedDimDto>();
+        [JsonProperty("plane")]      public string?              Plane      { get; set; }
+        [JsonProperty("sketch_id")]  public string?              SketchId   { get; set; }
+        [JsonProperty("entities")]   public SketchEntityDto[]    Entities   { get; set; } = System.Array.Empty<SketchEntityDto>();
+        [JsonProperty("named_dims")] public NamedDimDto[]        NamedDims  { get; set; } = System.Array.Empty<NamedDimDto>();
+        [JsonProperty("relations")]  public SketchRelationDto[]  Relations  { get; set; } = System.Array.Empty<SketchRelationDto>();
+        [JsonProperty("dimensions")] public SketchDimensionDto[] Dimensions { get; set; } = System.Array.Empty<SketchDimensionDto>();
 
         // v0.2 coordinate-first sketch primitives
         [JsonProperty("center")]  public double[]             Center     { get; set; } = System.Array.Empty<double>();
@@ -97,9 +101,32 @@ namespace SwCopilotAddin.Client
         [JsonProperty("filename_template")] public string? FilenameTemplate { get; set; }
     }
 
+    public sealed class SketchRelationDto
+    {
+        [JsonProperty("type")]       public string   Type      { get; set; } = "";
+        [JsonProperty("entity_ids")] public string[] EntityIds { get; set; } = System.Array.Empty<string>();
+        [JsonProperty("ref_id")]     public string?  RefId     { get; set; }
+    }
+
+    public sealed class SketchDimensionDto
+    {
+        [JsonProperty("type")]      public string  Type     { get; set; } = "";
+        [JsonProperty("entity_id")] public string  EntityId { get; set; } = "";
+        [JsonProperty("ref_id")]    public string? RefId    { get; set; }
+        [JsonProperty("value_mm")]  public double  ValueMm  { get; set; }
+    }
+
+    public sealed class ManufacturingIntentDto
+    {
+        [JsonProperty("material")]        public string Material       { get; set; } = "steel";
+        [JsonProperty("process")]         public string Process        { get; set; } = "machined";
+        [JsonProperty("tolerance_class")] public string ToleranceClass { get; set; } = "medium";
+    }
+
     public sealed class SketchEntityDto
     {
-        [JsonProperty("type")]      public string Type    { get; set; } = "";
+        [JsonProperty("id")]        public string  Id      { get; set; } = "";
+        [JsonProperty("type")]      public string  Type    { get; set; } = "";
 
         // rectangle / line
         [JsonProperty("x1_mm")] public double? X1Mm { get; set; }

@@ -2,9 +2,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    # ── Groq (legacy default; daily quota applies) ──────────────────────────
+    # ── Gemini (free tier, 1M TPM — recommended default) ────────────────────
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-2.0-flash"
+
+    # ── Groq (fallback; daily quota applies) ────────────────────────────────
     groq_api_key: str = ""
-    groq_model: str = "llama-3.3-70b-versatile"
+    groq_model: str = "llama-3.1-8b-instant"
 
     # ── NVIDIA NIM (OpenAI-compatible; set LLM_PROVIDER=nim to activate) ──
     # Hosted keys are issued through NVIDIA API Catalog / build.nvidia.com.
@@ -17,11 +21,11 @@ class Settings(BaseSettings):
     ollama_model: str = "qwen2.5-coder:7b"
 
     # ── Provider routing ─────────────────────────────────────────────────────
-    # Primary provider: "nim" | "ollama" | "groq"
-    llm_provider: str = "groq"
+    # Primary provider: "gemini" | "nim" | "ollama" | "groq"
+    llm_provider: str = "gemini"
     # Comma-separated fallback chain tried when primary hits quota/error.
-    # Example: LLM_FALLBACK_CHAIN=ollama,groq
-    llm_fallback_chain: str = ""
+    # Example: LLM_FALLBACK_CHAIN=groq,ollama
+    llm_fallback_chain: str = "groq"
 
     # ── Vector store & embeddings ────────────────────────────────────────────
     chroma_persist_dir: str     = "./chroma_db"

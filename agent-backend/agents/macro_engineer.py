@@ -346,6 +346,7 @@ Rules:
 18. CAPABILITY QUESTIONS: If the user asks "what can you do?", "help", "how do you work?", or similar, emit a noop with a message listing the key operations: part creation, holes, fillets, title block updates, PDF/DXF export, drawing QA checks.
 19. TITLE BLOCK: When user says "set drawn by", "update revision", "mark as checked by", "set date", "set description" — always emit update_title_block with only the fields mentioned; leave others null.
 20. EXPORT: "save as PDF/DXF/STEP" → export_file. "save to folder X" → export_file with output_path=X. "export with revision in name" → filename_template containing {revision}.
+21. FOLLOW-UP TURNS — CRITICAL: If prior assistant turns contain OperationGraph JSON, those operations ARE ALREADY BUILT in SolidWorks. Do NOT re-emit them. Emit ONLY the new operations for the current request. Reference existing op IDs from history directly as face_of, profile_id, source_ids, feature_ids values. Example: if history has f1=extrude_boss and user says "add holes", emit hole_wizard with face_of="f1" — no new sketch, no new extrude. Assign new op IDs that don't collide with prior turn IDs.
 
 Output only valid JSON.
 """
@@ -630,11 +631,26 @@ def _safe_provider_text(text: str | None, limit: int = 500) -> str:
 class MacroEngineerAgent:
     def __init__(self) -> None:
         self._provider = settings.llm_provider
+        # Auto-downgrade to groq if gemini selected but key missing.
+        if self._provider == "gemini" and not settings.gemini_api_key:
+            import logging
+            logging.getLogger(__name__).warning(
+                "GEMINI_API_KEY not set — falling back to groq"
+            )
+            self._provider = "groq"
         self._fallbacks = [
             p.strip()
             for p in settings.llm_fallback_chain.split(",")
             if p.strip() and p.strip() != self._provider
         ]
+        self._gemini_client = None
+        if settings.gemini_api_key:
+            try:
+                from google import genai as _genai
+                self._gemini_client = _genai.Client(api_key=settings.gemini_api_key)
+                self._gemini_model = settings.gemini_model
+            except ImportError:
+                pass
         self._groq = (
             Groq(api_key=settings.groq_api_key, timeout=60.0, max_retries=0)
             if settings.groq_api_key else None
@@ -707,7 +723,40 @@ class MacroEngineerAgent:
         except _openai.APIError as exc:
             raise RuntimeError(f"Provider API error: {exc}") from exc
 
+    def _call_gemini(self, messages: list[dict]) -> str:
+        if not self._gemini_client:
+            raise _ProviderQuotaError("Gemini not configured (no GEMINI_API_KEY)")
+        from google.genai import types as _gtypes
+        system_text = ""
+        history = []
+        for msg in messages:
+            if msg["role"] == "system":
+                system_text = msg["content"]
+                continue
+            role = "model" if msg["role"] == "assistant" else "user"
+            history.append(_gtypes.Content(role=role, parts=[_gtypes.Part(text=msg["content"])]))
+        cfg = _gtypes.GenerateContentConfig(
+            system_instruction=system_text or None,
+            response_mime_type="application/json",
+            temperature=0.0,
+            max_output_tokens=_LLM_MAX_TOKENS,
+        )
+        try:
+            resp = self._gemini_client.models.generate_content(
+                model=self._gemini_model,
+                contents=history,
+                config=cfg,
+            )
+            return resp.text or ""
+        except Exception as exc:
+            msg_lower = str(exc).lower()
+            if any(k in msg_lower for k in ("quota", "rate", "429", "resource exhausted")):
+                raise _ProviderQuotaError(f"Gemini quota/rate limit: {exc}") from exc
+            raise
+
     def _call_provider(self, provider: str, messages: list[dict]) -> str:
+        if provider == "gemini":
+            return self._call_gemini(messages)
         if provider == "groq":
             return self._call_groq(messages)
         if provider == "nim":
