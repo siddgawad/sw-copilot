@@ -353,27 +353,60 @@ async def version() -> dict:
 
 @app.get("/status")
 async def status() -> dict:
-    """Provider health check — no auth required so the add-in can display a
-    warning before the user even sends a message."""
-    providers_configured: list[str] = []
+    """Provider health check — no auth required so the add-in can warn the
+    user before they even send a message. Lists every FREE LLM provider,
+    which are configured, and what fallback chain will be used."""
+    providers_configured: list[dict] = []
+    if settings.gemini_api_key:
+        providers_configured.append({"name": "gemini", "model": settings.gemini_model, "tier": "free 1M TPM"})
     if settings.groq_api_key:
-        providers_configured.append("groq")
+        providers_configured.append({"name": "groq", "model": settings.groq_model, "tier": "free daily"})
     if settings.nim_api_key:
-        providers_configured.append("nim")
-    fallbacks = [p.strip() for p in settings.llm_fallback_chain.split(",") if p.strip()]
-    if "ollama" in fallbacks:
-        providers_configured.append("ollama (fallback)")
+        providers_configured.append({"name": "nim", "model": settings.nim_model, "tier": "free 1000/mo"})
+    if settings.openai_compat_base_url and settings.openai_compat_model:
+        providers_configured.append({
+            "name":  "openai_compat",
+            "model": settings.openai_compat_model,
+            "url":   settings.openai_compat_base_url,
+            "tier":  "depends on host",
+        })
+    # Ollama is ALWAYS treated as available; the call will surface a clear
+    # error if the local daemon isn't running.
+    providers_configured.append({
+        "name": "ollama",
+        "model": settings.ollama_model,
+        "url": settings.ollama_base_url,
+        "tier": "local — unlimited",
+    })
+
+    fallback_chain_used = settings.llm_fallback_chain
+    if "ollama" not in fallback_chain_used and not settings.llm_disable_ollama_fallback:
+        fallback_chain_used = (fallback_chain_used + ",ollama").lstrip(",")
+
     return {
         "primary_provider": settings.llm_provider,
-        "fallback_chain":   settings.llm_fallback_chain or "(none configured)",
+        "fallback_chain":   fallback_chain_used or "ollama",
         "providers_configured": providers_configured,
-        "groq_model":       settings.groq_model,
-        "fast_paths":       ["box", "cylinder", "shaft", "gear", "base_plate", "followup_features", "help"],
+        "fast_paths":       [
+            "box", "cylinder", "shaft", "gear", "base_plate",
+            "followup_features (corner_holes, fillet, chamfer)", "help",
+        ],
         "tip": (
-            "Fast-path operations (box, cylinder, shaft, etc.) never call the AI provider "
-            "and always work regardless of quota state."
+            "Fast-path operations and the local Ollama fallback mean this app "
+            "always works — even when every cloud provider is over quota."
         ),
+        "ollama_install_url": "https://ollama.com/download",
+        "ollama_pull_command": f"ollama pull {settings.ollama_model}",
     }
+
+
+@app.get("/learn/stats")
+async def learn_stats() -> dict:
+    """Failure-memory health: how many records, what error classes dominate,
+    when the store was last updated. Useful for debugging why the planner
+    is producing repeated mistakes."""
+    from learn import memory_stats
+    return memory_stats()
 
 
 @app.get("/health", dependencies=[Depends(verify_token)])

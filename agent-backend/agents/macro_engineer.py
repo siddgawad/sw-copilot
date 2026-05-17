@@ -699,19 +699,26 @@ def _safe_provider_text(text: str | None, limit: int = 500) -> str:
 
 class MacroEngineerAgent:
     def __init__(self) -> None:
+        import logging
+        log = logging.getLogger(__name__)
         self._provider = settings.llm_provider
-        # Auto-downgrade to groq if gemini selected but key missing.
+
+        # Auto-downgrade if the primary provider isn't configured.
         if self._provider == "gemini" and not settings.gemini_api_key:
-            import logging
-            logging.getLogger(__name__).warning(
-                "GEMINI_API_KEY not set — falling back to groq"
-            )
-            self._provider = "groq"
-        self._fallbacks = [
-            p.strip()
+            log.warning("GEMINI_API_KEY not set — auto-promoting next fallback")
+            self._provider = self._first_configured_fallback() or "ollama"
+
+        # Build the fallback chain. Always append ollama at the end so the
+        # user is never blocked by upstream quota outages.
+        chain = [
+            p.strip().lower()
             for p in settings.llm_fallback_chain.split(",")
-            if p.strip() and p.strip() != self._provider
+            if p.strip() and p.strip().lower() != self._provider.lower()
         ]
+        if "ollama" not in chain and not settings.llm_disable_ollama_fallback and self._provider != "ollama":
+            chain.append("ollama")
+        self._fallbacks = chain
+
         self._gemini_client = None
         if settings.gemini_api_key:
             try:
@@ -728,12 +735,39 @@ class MacroEngineerAgent:
             _OpenAI(api_key=settings.nim_api_key, base_url=settings.nim_base_url, timeout=60.0)
             if settings.nim_api_key else None
         )
+        # OpenAI-compatible free endpoint (OpenRouter free tier, HF TGI, etc.)
+        self._openai_compat = None
+        if settings.openai_compat_base_url and settings.openai_compat_model:
+            self._openai_compat = _OpenAI(
+                api_key=settings.openai_compat_api_key or "free",
+                base_url=settings.openai_compat_base_url,
+                timeout=60.0,
+            )
         # Ollama is always available as a local option; it handles connection errors itself.
         self._ollama = _OpenAI(
             api_key="ollama",
             base_url=settings.ollama_base_url,
             timeout=90.0,
         )
+
+    @staticmethod
+    def _first_configured_fallback() -> str:
+        """Return the first fallback in the chain whose credentials are set,
+        or empty string if none. Used when the primary provider is missing
+        its key at startup."""
+        order = [p.strip().lower() for p in settings.llm_fallback_chain.split(",") if p.strip()]
+        for p in order:
+            if p == "groq" and settings.groq_api_key:
+                return "groq"
+            if p == "gemini" and settings.gemini_api_key:
+                return "gemini"
+            if p == "nim" and settings.nim_api_key:
+                return "nim"
+            if p == "openai_compat" and settings.openai_compat_base_url:
+                return "openai_compat"
+            if p == "ollama":
+                return "ollama"
+        return ""
 
     def _call_groq(self, messages: list[dict]) -> str:
         if not self._groq:
@@ -833,6 +867,7 @@ class MacroEngineerAgent:
             raise
 
     def _call_provider(self, provider: str, messages: list[dict]) -> str:
+        provider = (provider or "").strip().lower()
         if provider == "gemini":
             return self._call_gemini(messages)
         if provider == "groq":
@@ -841,6 +876,15 @@ class MacroEngineerAgent:
             if not self._nim:
                 raise _ProviderQuotaError("NIM not configured (no NIM_API_KEY)")
             return self._call_openai_compat(self._nim, settings.nim_model, messages, json_mode=True)
+        if provider == "openai_compat":
+            if not self._openai_compat:
+                raise _ProviderQuotaError(
+                    "openai_compat not configured "
+                    "(set OPENAI_COMPAT_BASE_URL and OPENAI_COMPAT_MODEL)"
+                )
+            return self._call_openai_compat(
+                self._openai_compat, settings.openai_compat_model, messages, json_mode=True
+            )
         if provider == "ollama":
             return self._call_openai_compat(
                 self._ollama, settings.ollama_model, messages, json_mode=True
