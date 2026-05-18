@@ -237,8 +237,55 @@ class ArcEntity(BaseModel):
     clockwise:       bool = False
 
 
+class EllipseEntity(BaseModel):
+    """Axis-aligned ellipse by centre + semi-major (a) + semi-minor (b).
+
+    For rotated ellipses, set rotation_deg (CCW from +X).
+    C# executor: sketchMgr.CreateEllipse(cx,cy,0, cx+a*cos(r), cy+a*sin(r), 0,
+                                        cx-b*sin(r), cy+b*cos(r), 0)
+    """
+    type:           Literal["ellipse"] = "ellipse"
+    cx_mm:          float
+    cy_mm:          float
+    semi_major_mm:  float
+    semi_minor_mm:  float
+    rotation_deg:   float = 0.0
+
+
+class SplineEntity(BaseModel):
+    """Cubic spline through an ordered list of (x,y) points.
+
+    Minimum 3 points. For a closed spline, set closed=True (first and last
+    point are joined by an additional spline segment).
+
+    C# executor: sketchMgr.CreateSpline2(points_array, closed)
+    """
+    type:    Literal["spline"] = "spline"
+    points:  List[List[float]]   # [[x1,y1], [x2,y2], ...]
+    closed:  bool                = False
+
+
+class PolygonEntity(BaseModel):
+    """Regular N-sided polygon centred at (cx,cy), inscribed in a circle of
+    radius_mm. rotation_deg rotates the polygon CCW; default places one
+    vertex at angle=0.
+
+    C# executor: sketchMgr.CreatePolygon(cx,cy,0, cx+r,cy,0, sides, inscribed)
+    """
+    type:         Literal["polygon"] = "polygon"
+    cx_mm:        float
+    cy_mm:        float
+    radius_mm:    float
+    sides:        int
+    rotation_deg: float = 0.0
+    inscribed:    bool  = True
+
+
 SketchEntity = Annotated[
-    Union[RectangleEntity, CircleEntity, LineEntity, ArcEntity],
+    Union[
+        RectangleEntity, CircleEntity, LineEntity, ArcEntity,
+        EllipseEntity, SplineEntity, PolygonEntity,
+    ],
     Field(discriminator="type"),
 ]
 
@@ -460,6 +507,37 @@ class RevolveOp(BaseModel):
     angle_deg:  float = 360.0
 
 
+class EditFeatureOp(BaseModel):
+    """Modify a property of an existing feature without delete+recreate.
+
+    Common usage: "increase plate thickness to 10mm" → emit
+    EditFeatureOp(feature_id="Boss-Extrude1", depth_mm=10).
+    The C# executor uses Feature.ModifyDefinition2 to swap the dimension.
+
+    Only one of `depth_mm`, `radius_mm`, `distance_mm` may be set per op —
+    whichever applies to the target feature's type.
+    """
+    id:           str
+    type:         Literal["edit_feature"] = "edit_feature"
+    feature_id:   str                     # e.g. "Boss-Extrude1" or schema op_id "e1"
+    depth_mm:     Optional[float] = None  # for extrude_boss / extrude_cut
+    radius_mm:    Optional[float] = None  # for fillet
+    distance_mm:  Optional[float] = None  # for chamfer
+
+    @model_validator(mode="after")
+    def _chk(self) -> "EditFeatureOp":
+        if not self.feature_id:
+            raise ValueError("edit_feature requires feature_id")
+        provided = [v for v in (self.depth_mm, self.radius_mm, self.distance_mm) if v is not None]
+        if len(provided) == 0:
+            raise ValueError("edit_feature must set one of depth_mm / radius_mm / distance_mm")
+        if len(provided) > 1:
+            raise ValueError("edit_feature accepts only one dimension at a time")
+        if provided[0] <= 0:
+            raise ValueError("edit_feature dimension must be positive")
+        return self
+
+
 class DeleteFeatureOp(BaseModel):
     id:          str
     type:        Literal["delete_feature"] = "delete_feature"
@@ -549,7 +627,7 @@ Operation = Annotated[
         SketchOp, ExtrudeBossOp, ExtrudeCutOp, RebuildOp,
         FilletOp, ChamferOp, HoleWizardOp,
         CircularPatternOp, LinearPatternOp, MirrorOp,
-        RevolveOp, DeleteFeatureOp, NoopOp,
+        RevolveOp, DeleteFeatureOp, EditFeatureOp, NoopOp,
         UpdateTitleBlockOp, ExportFileOp, CheckDrawingOp, GenerateMacroOp,
         ShellOp, DraftOp, RibOp, SweptBossOp,
     ],

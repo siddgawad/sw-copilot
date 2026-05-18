@@ -47,3 +47,17 @@ class DeleteFeatureHandler(OpHandler):
 
     def execute(self, op: Any, ctx: ExecutionContext) -> None:
         ctx.features[op.id] = "delete_feature"
+
+
+class EditFeatureHandler(OpHandler):
+    """Validation-only: build123d cannot retroactively modify a previously-
+    built feature (parts are immutable in the imperative API). We record the
+    intent so feature_count is correct, but the geometric change is verified
+    indirectly — the next pattern-parity run should produce the new bbox.
+
+    The real edit happens in C# via Feature.ModifyDefinition2.
+    """
+    op_type = "edit_feature"
+
+    def execute(self, op: Any, ctx: ExecutionContext) -> None:
+        ctx.features[op.id] = "edit_feature"

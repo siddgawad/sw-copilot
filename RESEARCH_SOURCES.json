@@ -1,0 +1,246 @@
+[
+  {
+    "id": "S01",
+    "title": "How to Reduce Non-Value-Added Work in Engineering — Survey Results",
+    "url": "https://tech-clarity.com/non-value-added-work-survey-results/10995",
+    "published": "2018",
+    "summary": "Tech-Clarity survey of 228 manufacturers measuring time mechanical engineers spend on non-value-added work; the load-bearing industry-standard baseline (~33% non-value-added, ~20% from outdated info, ~15% on data management).",
+    "legacy": true
+  },
+  {
+    "id": "S02",
+    "title": "Accelerating the Process of Engineering Change Orders: Capacity and Congestion Effects",
+    "url": "https://sites.insead.edu/facultyresearch/research/doc.cfm?did=46443",
+    "published": "2014",
+    "summary": "INSEAD academic case-study aggregation of ECO cost data; quotes practicing engineers at US $10K routine to US $100Ks late-stage per change order.",
+    "legacy": true
+  },
+  {
+    "id": "S03",
+    "title": "Change Orders Impact on Project Cost",
+    "url": "https://peer.asee.org/change-orders-impact-on-project-cost.pdf",
+    "published": "2017",
+    "summary": "Peer-reviewed ASEE/AFIT regression study; projects with engineering changes overran final cost by 72% versus 11% for projects without.",
+    "legacy": true
+  },
+  {
+    "id": "S04",
+    "title": "Avoid 5 CAD Design Time Wasters",
+    "url": "https://tech-clarity.com/cad-design-time-wasters/8874",
+    "published": "2019",
+    "summary": "Tech-Clarity eBook categorising the five most common CAD time-waster sources from manufacturer interviews.",
+    "legacy": true
+  },
+  {
+    "id": "S05",
+    "title": "Reduce Scrap and Rework Costs — Benchmarking",
+    "url": "https://asq.org/quality-resources/benchmarking/reduce-scrap-and-rework-costs",
+    "published": "2024",
+    "summary": "ASQ member-data benchmarking: average manufacturer 2.2% of revenue lost to scrap and rework; world-class <0.6%. Total cost of poor quality ranges 10–30% of revenue."
+  },
+  {
+    "id": "S06",
+    "title": "What is the Value of GD&T Implementation?",
+    "url": "https://www.3dcs.com/what-is-the-value-of-gdandt-geometric-dimensioning-and-tolerancing",
+    "published": "2023",
+    "summary": "Dimensional Control Systems geometric analysis showing correct GD&T on circular features widens acceptance zone by 57%, cutting false-reject scrap on hole-pattern parts.",
+    "legacy": true
+  },
+  {
+    "id": "S07",
+    "title": "Autodesk's Project Bernini proves generative CAD is coming",
+    "url": "https://www.engineering.com/autodesks-project-bernini-proves-generative-cad-is-coming/",
+    "published": "2024",
+    "summary": "Engineering.com trade-press recap of Autodesk Bernini announcement and Neural CAD trajectory at AU 2025; vendor positioning that 80–90% of routine design tasks are automatable.",
+    "legacy": true
+  },
+  {
+    "id": "S08",
+    "title": "Teradyne — Teamcenter Case Study (Engineering Change Order)",
+    "url": "https://resources.sw.siemens.com/en-US/case-study-teradyne-teamcenter/",
+    "published": "2023",
+    "summary": "Siemens vendor case study: Teradyne cut ECO cycle by 84% and saved ~US $2M/year after Teamcenter rollout. Flagged vendor source.",
+    "legacy": true
+  },
+  {
+    "id": "S09",
+    "title": "Increased Productivity in Engineer-to-Order Production",
+    "url": "https://industry-science.com/en/articles/productivity-engineer-to-order/",
+    "published": "2022",
+    "summary": "Industry-Science.com article citing a German shipyard study attributing ~10% of manufacturing and assembly hours to engineering changes.",
+    "legacy": true
+  },
+  {
+    "id": "S10",
+    "title": "Dassault Systèmes 2024 Universal Registration Document and SOLIDWORKS 2025 Launch",
+    "url": "https://investor.3ds.com/news-releases/news-release-details/dassault-systemes-2024-universal-registration-document-annual/",
+    "published": "2025",
+    "summary": "Dassault Systèmes filed annual report + SOLIDWORKS 2025 press release: >8M SOLIDWORKS users, ~1.5M commercial seats, ~285K customers, 44% of new MCAD seats in 2024 = SOLIDWORKS."
+  },
+  {
+    "id": "S11",
+    "title": "CIMdata Publishes 2025 PLM Industry Review & Trends Report",
+    "url": "https://dailycadcam.com/cimdata-publishes-2025-plm-industry-review-trends-report/",
+    "published": "2025",
+    "summary": "DailyCADCAM independent summary of CIMdata's 2025 PLM Industry Review; PDM software market = US $2.53B in 2023."
+  },
+  {
+    "id": "S12",
+    "title": "Zoo.dev — Turning on Billing for Text-to-CAD + Pricing Page",
+    "url": "https://zoo.dev/blog/turning-on-billing-for-text-to-cad",
+    "published": "2025-10-14",
+    "summary": "Zoo vendor announcement: Text-to-CAD billed per-second from Oct 14 2025 at US $0.0083/sec (US $0.50/min); typical generation $0.08–$0.25/prompt; 'large majority of API calls last 10–30 sec'."
+  },
+  {
+    "id": "S13",
+    "title": "Project Bernini (Autodesk Research)",
+    "url": "https://www.research.autodesk.com/projects/project-bernini/",
+    "published": "2024",
+    "summary": "Autodesk Research project page describing Bernini text-to-3D-shape diffusion model; vendor disclosure corroborated by Engineering.com [S07].",
+    "legacy": true
+  },
+  {
+    "id": "S14",
+    "title": "AI Capabilities in SOLIDWORKS 2025: Redefining Design Intelligence",
+    "url": "https://www.engineersrule.com/ai-capabilities-in-solidworks-2025-redefining-design-intelligence/",
+    "published": "2025",
+    "summary": "Engineers Rule independent trade-press review of SOLIDWORKS 2025/2026 AI feature set; positioned as 'co-pilot not auto-pilot', with Backflip plug-in producing parametric models from mesh."
+  },
+  {
+    "id": "S15",
+    "title": "Is Text-to-CAD the Future of Product Design?",
+    "url": "https://mikekalil.com/blog/ai-driven-text-to-cad/",
+    "published": "2025",
+    "summary": "Independent blog confirming Zoo pricing details: 40 free min/month then $0.50/min; per-second billing live since 2025-09-26."
+  },
+  {
+    "id": "S16",
+    "title": "KittyCAD/text-to-cad-ui (Open-Source UI Repo)",
+    "url": "https://github.com/KittyCAD/text-to-cad-ui",
+    "published": "2026-01-16",
+    "summary": "Zoo Text-to-CAD UI repository: 276 stars; archived 2026-01-16; only UI is open-source, model and KCL backend remain proprietary."
+  },
+  {
+    "id": "S17",
+    "title": "Open Source AI Text-to-CAD Software by Zoo Unlocks Accessible 3D Design",
+    "url": "https://3dprintingindustry.com/news/open-source-ai-text-to-cad-software-by-zoo-unlocks-accessible-3d-design-236964/",
+    "published": "2024-08",
+    "summary": "3D Printing Industry coverage of Zoo Text-to-CAD release; documented limitation: 'works best with single objects, not complicated groupings of parts'.",
+    "legacy": true
+  },
+  {
+    "id": "S18",
+    "title": "Autodesk Shows Its AI Hand (Project Bernini → Neural CAD)",
+    "url": "https://aecmag.com/features/autodesk-shows-its-ai-hand/",
+    "published": "2025",
+    "summary": "AEC Magazine / DEVELOP3D coverage: Project Bernini remains a research proof-of-concept evolving into 'Neural CAD' for Fusion/Forma; no commercial NL→parametric CAD product yet from Autodesk."
+  },
+  {
+    "id": "S19",
+    "title": "Autodesk Assistant — Fusion Blog",
+    "url": "https://www.autodesk.com/products/fusion-360/blog/autodesk-assistant-ai/",
+    "published": "2025",
+    "summary": "Autodesk official blog: Autodesk Assistant shipped as a support chatbot in Fusion/Inventor/Moldflow/Vault in early 2025, not a geometry generator."
+  },
+  {
+    "id": "S20",
+    "title": "Autodesk Announces Fusion MCP Servers and More AI Updates",
+    "url": "https://www.engineering.com/autodesk-announces-fusion-mcp-servers-and-more-ai-updates/",
+    "published": "2025",
+    "summary": "Engineering.com: Autodesk Fusion MCP servers (2025/2026) — an agentic LLM-frontend / deterministic-backend interface; validates the architecture sw-copilot uses."
+  },
+  {
+    "id": "S21",
+    "title": "PTC Announces Latest Onshape AI Advisor Release",
+    "url": "https://www.ptc.com/en/news/2025/ptc-announces-latest-onshape-ai-advisor-release",
+    "published": "2025-10",
+    "summary": "PTC press release: Onshape AI Advisor launched Oct 2025 as an embedded advisor/chatbot, not NL→geometry; 'automated geometry creation' listed as future/exploratory."
+  },
+  {
+    "id": "S22",
+    "title": "PTC Launches Creo 12",
+    "url": "https://www.ptc.com/en/news/2025/ptc-launches-creo-12",
+    "published": "2025-06",
+    "summary": "PTC press release: Creo 12 (June 2025) added thermal physics to generative design but no NL→CAD prompt interface."
+  },
+  {
+    "id": "S23",
+    "title": "CAD-MLLM (Multimodal LLM for Parametric CAD)",
+    "url": "https://github.com/CAD-MLLM/CAD-MLLM",
+    "published": "2024",
+    "summary": "Academic project (2024–2025): released evaluation code and the Omni-CAD dataset but NOT model weights as of May 2025; no drop-in OSS competitor exists.",
+    "legacy": true
+  },
+  {
+    "id": "S24",
+    "title": "BlenderLLM",
+    "url": "https://github.com/FreedomIntelligence/BlenderLLM",
+    "published": "2024-12-17",
+    "summary": "Open-weight LLM (2024-12-17) targeting Blender Python scripts, not parametric CAD or SolidWorks; confirms no public-weight model exists for parametric MCAD.",
+    "legacy": true
+  },
+  {
+    "id": "S25",
+    "title": "Seek-CAD: Self-Refined NL→Parametric CAD",
+    "url": "https://arxiv.org/abs/2505.17702",
+    "published": "2025-05",
+    "summary": "arXiv paper demonstrating self-refined NL→parametric CAD via local DeepSeek inference; validates the 'LLM + validation loop' architecture but no tooling integration."
+  },
+  {
+    "id": "S26",
+    "title": "AI vs. SolidWorks API: The Ultimate Macro Challenge",
+    "url": "https://forum.cadmunity.com/t/ai-vs-solidworks-api-the-ultimate-macro-challenge/6144",
+    "published": "2024",
+    "summary": "CADmunity forum thread: AI-generated SolidWorks macros pass on ~30% of first attempts; supplying type-library signatures raises success to >80%. Exactly the determinism gap sw-copilot closes.",
+    "legacy": true
+  },
+  {
+    "id": "S27",
+    "title": "New Solidworks AI Agents Added at 3DExperience World 2026",
+    "url": "https://develop3d.com/cad/new-solidworks-ai-agents-added-at-3dexperience-world/",
+    "published": "2026",
+    "summary": "DEVELOP3D coverage of 3DEXPERIENCE World 2026: LEO/MARIE/AURA 'Virtual Companions'; LEO launches mid-2026, MARIE later; require 3DEXPERIENCE cloud, leaving SW 2021 desktop install base unserved."
+  },
+  {
+    "id": "S28",
+    "title": "3DX World — SOLIDWORKS AI Recap (Hawk Ridge)",
+    "url": "https://hawkridgesys.com/blog/3dx-world-solidworks-ai",
+    "published": "2026",
+    "summary": "Hawk Ridge / GoEngineer 2026 recaps: headline generative features are 'real features coming later this year' — not shipping; opens credibility-by-shipping window for an actually-working free tool."
+  },
+  {
+    "id": "S29",
+    "title": "73% of Drawing Reviews Could Be Automated, Suggests New Survey",
+    "url": "https://develop3d.com/ai/73-of-drawing-reviews-could-be-automated-suggests-new-survey",
+    "published": "2025-08-26",
+    "summary": "Capvidia/DEVELOP3D survey of 250 US/EU engineering leaders: 73% of drawing reviews automatable; 96% plan to adopt AI 2D review within 1–2 years; only 55% of company standards documented, current, and frequently used."
+  },
+  {
+    "id": "S30",
+    "title": "10 AI Tools Coming to SolidWorks in 2026",
+    "url": "https://www.engineering.com/10-ai-tools-coming-to-solidworks-in-2026/",
+    "published": "2026",
+    "summary": "Engineering.com listing of every Dassault AI feature as roadmap/beta — confirms incumbent demos vastly outpace incumbent shipping."
+  },
+  {
+    "id": "S31",
+    "title": "3DX World 2026 SOLIDWORKS AI Recap (demo content)",
+    "url": "https://hawkridgesys.com/blog/3dx-world-solidworks-ai",
+    "published": "2026",
+    "summary": "Same source as [S28]; specifically documents the keynote demos that resonated with audiences — reverse-engineering 2D drawings to parametric models, generating manufacturable parts from sketches, wind-loaded water tank frame 'in minutes'."
+  },
+  {
+    "id": "S32",
+    "title": "Autodesk Shows Its AI Hand — Editable Output Theme",
+    "url": "https://develop3d.com/cad/autodesk-shows-its-ai-hand/",
+    "published": "2025",
+    "summary": "Same source as [S18]; specifically captures the practitioner preference for editable parametric output over opaque mesh blobs ('fully editable 3D CAD models')."
+  },
+  {
+    "id": "S33",
+    "title": "New AI Agent Learns to Use CAD to Create 3D Objects from Sketches",
+    "url": "https://news.mit.edu/2025/new-ai-agent-learns-use-cad-create-3d-objects-sketches-1119",
+    "published": "2025-11-19",
+    "summary": "MIT News: research agent learning CAD by watching designer UI moves; implies engineer audiences respond to 'compiles to real CAD operations' framing over 'generates STEP files'."
+  }
+]

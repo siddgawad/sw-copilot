@@ -399,7 +399,7 @@ Rules:
 24. RIB: profile_id must be an open-profile sketch (a line, not a closed rectangle). direction "both" grows rib symmetrically on each side of the sketch plane.
 25. SWEPT BOSS: profile_id is a closed 2D profile sketch; path_id is an open path sketch. Emit the profile sketch first, then the path sketch, then swept_boss. path and profile sketches must be on perpendicular planes.
 26. SKETCH PLANE CONVENTION — ALL base shapes sketch on Front Plane (XY) and extrude in +Z. Top Plane is only for shapes explicitly asking for a horizontal orientation. Right Plane is only for shapes explicitly requesting a YZ profile. Never default to Top Plane for plates, enclosures, boxes, or flat parts — always Front Plane.
-27. MODIFY EXISTING PART — "increase thickness", "change thickness to X", "make it Xmm thick" on a part that already exists: emit delete_feature targeting the extrude op (e.g. "Boss-Extrude1"), then a new create_sketch + add_center_rectangle + extrude_boss with the new depth. Use part bbox from history to keep length and width the same. NEVER add a second extrude on top of an existing one — that adds material instead of changing thickness.
+27. MODIFY EXISTING PART — "increase thickness", "change thickness to X", "make it Xmm thick", "change radius/fillet to X" on a part that already exists: emit a SINGLE edit_feature op. Example: {"id":"ed1","type":"edit_feature","feature_id":"Boss-Extrude1","depth_mm":10}. The executor calls Feature.ModifyDefinition2 — no delete+recreate. NEVER add a second extrude on top of an existing one. Use the SolidWorks feature name from history (e.g. "Boss-Extrude1", "Fillet1", "Chamfer1") as feature_id.
 28. CANNOT FILLET HOLE RIMS: "fillet circular edges", "fillet hole edges", "fillet round edges" → output noop explaining SolidWorks cannot fillet the circular rim of a through-hole. Suggest 'fillet all edges Xmm' (linear edges only) instead.
 29. FEATURE NAME MATCHING for delete_feature: use the SolidWorks feature name from history (e.g. "Boss-Extrude1", "Sketch3", "Cut-Extrude1"). Never use schema op IDs like "e1" or "sk1" as feature_ids — those are internal planner IDs, not SolidWorks feature names.
 
@@ -607,6 +607,14 @@ def _build_context_block(ctx: DocumentContext, rag_context: str = "") -> str:
 
 
 def _extract_json_object(content: str) -> dict:
+    """Defensive JSON extraction with repair fallback.
+
+    Handles common LLM malformedness:
+        - ``` code fences (stripped)
+        - trailing prose after the closing brace (find-last-brace)
+        - trailing commas, comments, single-quoted keys, unterminated strings
+          (via json-repair fallback)
+    """
     text = content.strip()
     if text.startswith("```"):
         first_newline = text.find("\n")
@@ -619,7 +627,19 @@ def _extract_json_object(content: str) -> dict:
     if start < 0 or end <= start:
         raise ValueError("LLM response did not contain a JSON object.")
 
-    return json.loads(text[start:end + 1])
+    candidate = text[start:end + 1]
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError:
+        try:
+            from json_repair import repair_json
+        except ImportError:
+            raise
+        # Repair common LLM malformedness; returns a parsed dict directly.
+        repaired = repair_json(candidate, return_objects=True)
+        if isinstance(repaired, dict):
+            return repaired
+        raise ValueError("LLM response could not be repaired into a JSON object.")
 
 
 def _rate_limit_delay_seconds(exc: APIStatusError) -> float:

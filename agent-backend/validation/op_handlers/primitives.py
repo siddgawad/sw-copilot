@@ -14,13 +14,23 @@ from __future__ import annotations
 
 from typing import Any
 
+import math
+
 from build123d import (
+    BuildLine,
     BuildSketch,
+    CenterArc,
     Circle,
+    Ellipse,
     Line,
     Locations,
+    Plane,
+    Polyline,
     Rectangle,
+    RegularPolygon,
+    Spline,
     extrude,
+    make_face,
 )
 
 from ..context import ExecutionContext, _SketchRecord
@@ -86,6 +96,45 @@ class SketchHandler(OpHandler):
                     entity_count += 4
                 elif entity.type == "line":
                     Line((entity.x1_mm, entity.y1_mm), (entity.x2_mm, entity.y2_mm))
+                    entity_count += 1
+                elif entity.type == "arc":
+                    # build123d CenterArc: arc by centre + radius + start angle + arc angle
+                    arc_angle = entity.end_angle_deg - entity.start_angle_deg
+                    if entity.clockwise:
+                        arc_angle = -abs(arc_angle)
+                    with Locations((entity.cx_mm, entity.cy_mm)):
+                        CenterArc(
+                            radius=entity.radius_mm,
+                            start_angle=entity.start_angle_deg,
+                            arc_size=arc_angle,
+                        )
+                    entity_count += 1
+                elif entity.type == "ellipse":
+                    with Locations((entity.cx_mm, entity.cy_mm)):
+                        Ellipse(
+                            x_radius=entity.semi_major_mm,
+                            y_radius=entity.semi_minor_mm,
+                            rotation=entity.rotation_deg,
+                        )
+                    entity_count += 1
+                elif entity.type == "polygon":
+                    with Locations((entity.cx_mm, entity.cy_mm)):
+                        RegularPolygon(
+                            radius=entity.radius_mm,
+                            side_count=entity.sides,
+                            rotation=entity.rotation_deg,
+                        )
+                    entity_count += entity.sides
+                elif entity.type == "spline":
+                    pts = [tuple(p) for p in entity.points]
+                    if entity.closed and len(pts) >= 3 and pts[0] != pts[-1]:
+                        pts.append(pts[0])
+                    # Splines are 1D curves; build them in a BuildLine context
+                    # and convert to a face for sketch use.
+                    with BuildLine() as _spline_ln:
+                        Spline(*pts)
+                    if entity.closed:
+                        make_face()
                     entity_count += 1
                 else:
                     raise ValueError(f"Unsupported sketch entity type: {entity.type!r}")

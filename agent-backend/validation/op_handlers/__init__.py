@@ -22,7 +22,7 @@ from .primitives import (
     ExtrudeBossHandler,
     ExtrudeCutHandler,
 )
-from .meta import RebuildHandler, NoopHandler, DeleteFeatureHandler
+from .meta import RebuildHandler, NoopHandler, DeleteFeatureHandler, EditFeatureHandler
 from .hole_wizard import HoleWizardHandler
 from .edge_finish import FilletHandler, ChamferHandler
 from .pattern import CircularPatternHandler
@@ -46,6 +46,7 @@ def _build_registry() -> "dict[str, OpHandler]":
         RebuildHandler(),
         NoopHandler(),
         DeleteFeatureHandler(),
+        EditFeatureHandler(),
         # ── Phase 2: DELEGATABLE handlers ────────────────────────────
         HoleWizardHandler(),
         FilletHandler(),
