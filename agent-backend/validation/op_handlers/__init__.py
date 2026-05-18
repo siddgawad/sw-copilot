@@ -16,12 +16,17 @@ from typing import TYPE_CHECKING
 from .primitives import (
     CreatePartHandler,
     CreateSketchHandler,
+    SketchHandler,
     AddCenterRectangleHandler,
     AddCirclesHandler,
     ExtrudeBossHandler,
     ExtrudeCutHandler,
 )
 from .meta import RebuildHandler, NoopHandler, DeleteFeatureHandler
+from .hole_wizard import HoleWizardHandler
+from .edge_finish import FilletHandler, ChamferHandler
+from .pattern import CircularPatternHandler
+from .solid_features import ShellHandler
 
 if TYPE_CHECKING:
     from .base import OpHandler
@@ -33,6 +38,7 @@ def _build_registry() -> "dict[str, OpHandler]":
         # ── Phase 1: foundation primitives (CLAUDE) ──────────────────
         CreatePartHandler(),
         CreateSketchHandler(),
+        SketchHandler(),
         AddCenterRectangleHandler(),
         AddCirclesHandler(),
         ExtrudeBossHandler(),
@@ -41,11 +47,11 @@ def _build_registry() -> "dict[str, OpHandler]":
         NoopHandler(),
         DeleteFeatureHandler(),
         # ── Phase 2: DELEGATABLE handlers ────────────────────────────
-        # Uncomment as each is implemented. Tests will start passing.
-        # HoleWizardHandler(),       # op_handlers/hole_wizard.py
-        # FilletHandler(),           # op_handlers/edge_finish.py
-        # ChamferHandler(),          # op_handlers/edge_finish.py
-        # CircularPatternHandler(),  # op_handlers/pattern.py
+        HoleWizardHandler(),
+        FilletHandler(),
+        ChamferHandler(),
+        CircularPatternHandler(),
+        ShellHandler(),
         # LinearPatternHandler(),    # op_handlers/pattern.py
         # MirrorHandler(),           # op_handlers/pattern.py
     ]

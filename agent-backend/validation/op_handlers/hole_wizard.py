@@ -28,10 +28,15 @@ WHY this handler is harder than fillet/chamfer:
 """
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from build123d import BuildSketch, Circle, Locations, Plane, extrude
 
+from standards.dimension_resolver import (
+    resolve_clearance_hole,
+    resolve_counterbore,
+)
 from ..context import ExecutionContext
 from .base import OpHandler
 
@@ -89,9 +94,17 @@ class HoleWizardHandler(OpHandler):
             CADBooster.SolidDna's SelectTopFaceOfBody (which does the
             same trick on the C# side).
 
-        TODO(claude/codex): implement.
         """
-        raise NotImplementedError("HoleWizardHandler._top_face_plane")
+        bb = part.bounding_box()
+        dx = abs(bb.size.X)
+        dy = abs(bb.size.Y)
+        dz = abs(bb.size.Z)
+
+        if dz <= dx and dz <= dy:
+            return Plane(origin=(0, 0, bb.max.Z), x_dir=(1, 0, 0), z_dir=(0, 0, 1))
+        if dy <= dx and dy <= dz:
+            return Plane(origin=(0, bb.max.Y, 0), x_dir=(1, 0, 0), z_dir=(0, 1, 0))
+        return Plane(origin=(bb.max.X, 0, 0), x_dir=(0, 1, 0), z_dir=(1, 0, 0))
 
     def _resolve_dimensions(self, fastener_size: str, hole_type: str) -> dict[str, float]:
         """Look up hole dimensions from the standards module.
@@ -117,10 +130,33 @@ class HoleWizardHandler(OpHandler):
         ValueError
             If fastener_size is not in the ISO table.
 
-        TODO(claude/codex): implement.
-            from standards.dimension_resolver import resolve_clearance_hole, ...
         """
-        raise NotImplementedError("HoleWizardHandler._resolve_dimensions")
+        clearance = resolve_clearance_hole(fastener_size)
+        if clearance is None:
+            raise ValueError(f"Unsupported fastener size for clearance hole: {fastener_size}")
+
+        result: dict[str, float] = {
+            "clearance_diameter_mm": float(clearance["diameter_mm"]),
+            "counterbore_diameter_mm": 0.0,
+            "counterbore_depth_mm": 0.0,
+            "csk_diameter_mm": 0.0,
+            "csk_angle_deg": 90.0,
+        }
+
+        if hole_type == "counterbore":
+            counterbore = resolve_counterbore(fastener_size)
+            if counterbore is None:
+                raise ValueError(f"Unsupported fastener size for counterbore: {fastener_size}")
+            result["counterbore_diameter_mm"] = float(counterbore["counterbore_diameter_mm"])
+            result["counterbore_depth_mm"] = float(counterbore["counterbore_depth_mm"])
+        elif hole_type == "countersink":
+            counterbore = resolve_counterbore(fastener_size)
+            if counterbore is None:
+                raise ValueError(f"Unsupported fastener size for countersink: {fastener_size}")
+            result["csk_diameter_mm"] = float(counterbore["countersink_diameter_mm"])
+            result["csk_angle_deg"] = 90.0
+
+        return result
 
     def _cut_holes(self, ctx: ExecutionContext, plane: Plane,
                    op: Any, dims: dict[str, float], part: Any) -> None:
@@ -137,6 +173,115 @@ class HoleWizardHandler(OpHandler):
             self._cut_through(part, plane, positions, dia_mm)  → new_part
             self._cut_pocket(part, plane, positions, dia_mm, depth_mm) → new_part
 
-        TODO(claude/codex): implement.
         """
-        raise NotImplementedError("HoleWizardHandler._cut_holes")
+        positions = [(float(p.x_mm), float(p.y_mm)) for p in op.positions]
+        clearance_dia = dims["clearance_diameter_mm"]
+        self._validate_positions(part, plane, positions, clearance_dia)
+
+        new_part = part
+        hole_type = (op.hole_type or "simple").lower()
+
+        if hole_type == "counterbore":
+            cbore_dia = dims["counterbore_diameter_mm"]
+            cbore_depth = dims["counterbore_depth_mm"]
+            self._guard_depth(new_part, cbore_depth, "counterbore")
+            self._validate_positions(new_part, plane, positions, cbore_dia)
+            new_part = self._cut_pocket(new_part, plane, positions, cbore_dia, cbore_depth)
+        elif hole_type == "countersink":
+            csk_dia = dims["csk_diameter_mm"]
+            angle = math.radians(dims.get("csk_angle_deg", 90.0) / 2.0)
+            csk_depth = ((csk_dia - clearance_dia) / 2.0) / max(math.tan(angle), 1e-6)
+            self._guard_depth(new_part, csk_depth, "countersink")
+            self._validate_positions(new_part, plane, positions, csk_dia)
+            new_part = self._cut_pocket(new_part, plane, positions, csk_dia, csk_depth)
+
+        new_part = self._cut_through(new_part, plane, positions, clearance_dia)
+
+        if ctx.active_part_id is None:
+            ctx.active_part_id = op.id
+        ctx.parts[ctx.active_part_id] = new_part
+        ctx.extras[f"hole_dia:{op.id}"] = clearance_dia
+        ctx.extras[f"hole_positions:{op.id}"] = positions
+
+    def _cut_through(
+        self,
+        part: Any,
+        plane: Plane,
+        positions: list[tuple[float, float]],
+        diameter_mm: float,
+    ) -> Any:
+        """Subtract through-cylinders at all local sketch positions."""
+        bb = part.bounding_box()
+        depth = max(bb.size.X, bb.size.Y, bb.size.Z) + 10.0
+        tool = self._cylindrical_tool(plane, positions, diameter_mm, depth, both=True)
+        return part - tool
+
+    def _cut_pocket(
+        self,
+        part: Any,
+        plane: Plane,
+        positions: list[tuple[float, float]],
+        diameter_mm: float,
+        depth_mm: float,
+    ) -> Any:
+        """Subtract finite-depth pockets inward from the selected top face."""
+        tool = self._cylindrical_tool(plane, positions, diameter_mm, -depth_mm, both=False)
+        return part - tool
+
+    def _cylindrical_tool(
+        self,
+        plane: Plane,
+        positions: list[tuple[float, float]],
+        diameter_mm: float,
+        amount_mm: float,
+        *,
+        both: bool,
+    ) -> Any:
+        with BuildSketch(plane) as sketch:
+            for x_mm, y_mm in positions:
+                with Locations((x_mm, y_mm)):
+                    Circle(diameter_mm / 2.0)
+        return extrude(sketch.sketch, amount=amount_mm, both=both)
+
+    def _guard_depth(self, part: Any, depth_mm: float, label: str) -> None:
+        """Reject blind pockets deeper than or equal to the thinnest body axis."""
+        bb = part.bounding_box()
+        thickness = min(abs(bb.size.X), abs(bb.size.Y), abs(bb.size.Z))
+        if depth_mm >= thickness - 0.01:
+            raise ValueError(
+                f"{label} depth {depth_mm:g} mm exceeds part thickness {thickness:g} mm"
+            )
+
+    def _validate_positions(
+        self,
+        part: Any,
+        plane: Plane,
+        positions: list[tuple[float, float]],
+        diameter_mm: float,
+    ) -> None:
+        """Reject holes whose projected circles do not fit inside the top face."""
+        bb = part.bounding_box()
+        radius = diameter_mm / 2.0
+
+        normal = plane.z_dir
+        if abs(normal.Z) >= abs(normal.X) and abs(normal.Z) >= abs(normal.Y):
+            x_min, x_max = bb.min.X, bb.max.X
+            y_min, y_max = bb.min.Y, bb.max.Y
+        elif abs(normal.Y) >= abs(normal.X) and abs(normal.Y) >= abs(normal.Z):
+            x_min, x_max = bb.min.X, bb.max.X
+            y_min, y_max = bb.min.Z, bb.max.Z
+        else:
+            x_min, x_max = bb.min.Y, bb.max.Y
+            y_min, y_max = bb.min.Z, bb.max.Z
+
+        for index, (x_mm, y_mm) in enumerate(positions, start=1):
+            if (
+                x_mm - radius < x_min - 0.01
+                or x_mm + radius > x_max + 0.01
+                or y_mm - radius < y_min - 0.01
+                or y_mm + radius > y_max + 0.01
+            ):
+                raise ValueError(
+                    f"hole position {index} at ({x_mm:g}, {y_mm:g}) mm with "
+                    f"{diameter_mm:g} mm diameter does not fit inside face bounds"
+                )

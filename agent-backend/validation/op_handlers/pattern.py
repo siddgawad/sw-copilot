@@ -59,7 +59,16 @@ class CircularPatternHandler(OpHandler):
         """Same as HoleWizardHandler._top_face_plane. Consider extracting
         a shared helper in a new validation/geometry.py if you implement
         both at once."""
-        raise NotImplementedError("CircularPatternHandler._infer_top_plane")
+        bb = part.bounding_box()
+        dx = abs(bb.size.X)
+        dy = abs(bb.size.Y)
+        dz = abs(bb.size.Z)
+
+        if dz <= dx and dz <= dy:
+            return Plane(origin=(0, 0, bb.max.Z), x_dir=(1, 0, 0), z_dir=(0, 0, 1))
+        if dy <= dx and dy <= dz:
+            return Plane(origin=(0, bb.max.Y, 0), x_dir=(1, 0, 0), z_dir=(0, 1, 0))
+        return Plane(origin=(bb.max.X, 0, 0), x_dir=(0, 1, 0), z_dir=(1, 0, 0))
 
     def _infer_source_diameter(self, source_ids: list[str], ctx: ExecutionContext) -> float:
         """Look at ctx.extras for the diameter the source hole used.
@@ -69,9 +78,14 @@ class CircularPatternHandler(OpHandler):
 
         If multiple source_ids and they disagree, take the first.
 
-        TODO(claude/codex): implement, coordinating with hole_wizard.
         """
-        raise NotImplementedError("CircularPatternHandler._infer_source_diameter")
+        for source_id in source_ids:
+            diameter = ctx.extras.get(f"hole_dia:{source_id}")
+            if diameter is not None:
+                return float(diameter)
+        raise ValueError(
+            f"Could not infer source hole diameter for circular_pattern from {source_ids!r}"
+        )
 
     def _pattern_positions(self, pcd_mm: float, count: int) -> list[tuple[float, float]]:
         """Return N (x, y) positions evenly spaced on a circle of radius pcd_mm/2.
@@ -82,9 +96,20 @@ class CircularPatternHandler(OpHandler):
                      r * math.sin(2 * math.pi * i / count))
                     for i in range(count)]
 
-        TODO(claude/codex): implement.
         """
-        raise NotImplementedError("CircularPatternHandler._pattern_positions")
+        if count < 2:
+            raise ValueError("circular_pattern count must be >= 2")
+        if pcd_mm <= 0:
+            raise ValueError("circular_pattern pcd_mm must be positive")
+
+        radius = pcd_mm / 2.0
+        return [
+            (
+                radius * math.cos(2.0 * math.pi * i / count),
+                radius * math.sin(2.0 * math.pi * i / count),
+            )
+            for i in range(count)
+        ]
 
     def _cut_at_positions(self, part: Any, plane: Plane,
                           positions: list[tuple[float, float]],
@@ -92,9 +117,15 @@ class CircularPatternHandler(OpHandler):
         """Cut a through-hole at each (x, y) on `plane` of `diameter`.
         Returns the new part.
 
-        TODO(claude/codex): implement using BuildSketch + Locations + extrude.
         """
-        raise NotImplementedError("CircularPatternHandler._cut_at_positions")
+        bb = part.bounding_box()
+        depth = max(bb.size.X, bb.size.Y, bb.size.Z) + 10.0
+        with BuildSketch(plane) as sketch:
+            for x_mm, y_mm in positions:
+                with Locations((x_mm, y_mm)):
+                    Circle(diameter / 2.0)
+        tool = extrude(sketch.sketch, amount=depth, both=True)
+        return part - tool
 
 
 # ── linear_pattern ────────────────────────────────────────────────────────────

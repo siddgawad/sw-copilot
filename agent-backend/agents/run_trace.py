@@ -17,6 +17,7 @@ These are clean, structured training traces.  Not internet text.
 from __future__ import annotations
 
 import re
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -28,7 +29,6 @@ from models.schemas import (
     ValidationReport,
 )
 
-_RUNS_DIR = Path("runs")
 _SLUG_RE  = re.compile(r"[^a-z0-9]+")
 
 
@@ -45,7 +45,9 @@ def make_trace_id(part_name: str | None = None) -> str:
 
 
 def _run_dir(trace_id: str) -> Path:
-    return _RUNS_DIR / trace_id
+    override = os.environ.get("SW_COPILOT_RUNS_DIR")
+    root = Path(override) if override else Path(__file__).resolve().parents[2] / "runs"
+    return root / trace_id
 
 
 def save_generate_trace(

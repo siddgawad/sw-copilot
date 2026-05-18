@@ -48,9 +48,12 @@ def match(prompt: str) -> tuple[float, float, float] | None:
     m = _DIM3.search(prompt)
     if m:
         a, b, c = float(m.group(1)), float(m.group(2)), float(m.group(3))
-        # Smallest is thickness; the other two are leg lengths.
-        dims = sorted([a, b, c])
-        return dims[1], dims[2], dims[0]
+        # Smallest is thickness; preserve the user's order for the two legs.
+        thickness = min(a, b, c)
+        legs = [value for value in (a, b, c) if value != thickness]
+        if len(legs) < 2:
+            legs = sorted([a, b, c], reverse=True)[:2]
+        return legs[0], legs[1], thickness
     return None
 
 

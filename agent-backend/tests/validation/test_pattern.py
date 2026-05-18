@@ -16,7 +16,6 @@ from models.schemas import (
 from validation import Build123dBackend
 
 
-@pytest.mark.xfail(reason="CircularPatternHandler not yet implemented", strict=False)
 def test_flange_with_6_bolt_holes_on_60mm_pcd():
     """Canonical bolt-circle case: 80mm diameter × 6mm thick flange with
     6 × M5 holes on 60mm PCD. After cut + pattern, bbox stays 80×80×6."""

@@ -1,8 +1,4 @@
-"""Tests for FilletHandler and ChamferHandler.
-
-Implementer (claude/codex/sonnet): each xfail comes with a one-line spec
-of the geometric outcome to assert.
-"""
+"""Tests for FilletHandler and ChamferHandler."""
 from __future__ import annotations
 
 import pytest
@@ -29,7 +25,6 @@ def _plate_graph(extra_ops: list) -> OperationGraph:
     ])
 
 
-@pytest.mark.xfail(reason="FilletHandler not yet implemented", strict=False)
 def test_fillet_all_edges_2mm_preserves_bbox_within_tolerance():
     """A 2mm fillet on a 100×60×10 plate shrinks bbox by at most ~0.6mm in
     each corner (1 - 1/sqrt(2)) × 2mm. Bbox extents stay ~100×60×10."""
@@ -43,7 +38,6 @@ def test_fillet_all_edges_2mm_preserves_bbox_within_tolerance():
     assert bb.z_mm == pytest.approx(10.0, abs=0.05)
 
 
-@pytest.mark.xfail(reason="FilletHandler not yet implemented", strict=False)
 def test_fillet_radius_too_large_records_error():
     """Fillet of R=10 on a 10mm-thick plate → ValueError → recorded as error."""
     result = Build123dBackend().execute(_plate_graph([
@@ -53,7 +47,6 @@ def test_fillet_radius_too_large_records_error():
     assert any("radius" in e.lower() or "ValueError" in e for e in result.errors)
 
 
-@pytest.mark.xfail(reason="ChamferHandler not yet implemented", strict=False)
 def test_chamfer_top_edges_2mm_preserves_overall_bbox():
     result = Build123dBackend().execute(_plate_graph([
         ChamferOp(id="ch1", feature_ids=["__top_edges__"], distance_mm=2.0),

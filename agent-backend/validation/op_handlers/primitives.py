@@ -17,6 +17,7 @@ from typing import Any
 from build123d import (
     BuildSketch,
     Circle,
+    Line,
     Locations,
     Rectangle,
     extrude,
@@ -62,6 +63,41 @@ class CreateSketchHandler(OpHandler):
         ctx.features[op.id] = "create_sketch"
 
 
+class SketchHandler(OpHandler):
+    """Build legacy generic sketch operations from their entity list."""
+    op_type = "sketch"
+
+    def execute(self, op: Any, ctx: ExecutionContext) -> None:
+        plane = _resolve_sketch_plane(op.plane, ctx)
+        entity_count = 0
+        with BuildSketch(plane) as sk:
+            for entity in op.entities:
+                if entity.type == "circle":
+                    with Locations((entity.cx_mm, entity.cy_mm)):
+                        Circle(entity.radius_mm)
+                    entity_count += 1
+                elif entity.type == "rectangle":
+                    cx = (entity.x1_mm + entity.x2_mm) / 2.0
+                    cy = (entity.y1_mm + entity.y2_mm) / 2.0
+                    length = abs(entity.x2_mm - entity.x1_mm)
+                    width = abs(entity.y2_mm - entity.y1_mm)
+                    with Locations((cx, cy)):
+                        Rectangle(length, width)
+                    entity_count += 4
+                elif entity.type == "line":
+                    Line((entity.x1_mm, entity.y1_mm), (entity.x2_mm, entity.y2_mm))
+                    entity_count += 1
+                else:
+                    raise ValueError(f"Unsupported sketch entity type: {entity.type!r}")
+
+        ctx.pending_sketch = sk.sketch
+        ctx.pending_sketch_plane = plane
+        ctx.sketch_records.append(
+            _SketchRecord(name=op.id, plane_name=str(plane), entity_count=entity_count)
+        )
+        ctx.features[op.id] = "sketch"
+
+
 # ── add_center_rectangle ──────────────────────────────────────────────────────
 
 class AddCenterRectangleHandler(OpHandler):
@@ -81,7 +117,8 @@ class AddCenterRectangleHandler(OpHandler):
                 f"add_center_rectangle references unknown sketch_id={op.sketch_id!r}"
             )
         with BuildSketch(plane) as sk:
-            Rectangle(op.length, op.width)
+            with Locations((op.center[0], op.center[1])):
+                Rectangle(op.length, op.width)
         ctx.pending_sketch = sk.sketch
         ctx.pending_sketch_plane = plane
         ctx.sketch_records.append(
@@ -111,6 +148,13 @@ class AddCirclesHandler(OpHandler):
             for c in op.circles:
                 with Locations((c.center[0], c.center[1])):
                     Circle(c.diameter / 2.0)
+        ctx.extras["pending_circles"] = [
+            {
+                "center": (float(c.center[0]), float(c.center[1])),
+                "diameter": float(c.diameter),
+            }
+            for c in op.circles
+        ]
         ctx.pending_sketch = sk.sketch
         ctx.pending_sketch_plane = plane
         ctx.sketch_records.append(
@@ -162,6 +206,7 @@ class ExtrudeCutHandler(OpHandler):
     op_type = "extrude_cut"
 
     def execute(self, op: Any, ctx: ExecutionContext) -> None:
+        pending_circles = ctx.extras.pop("pending_circles", None)
         sketch, _plane = ctx.take_sketch()
         existing = ctx.active_part()
         if existing is None:
@@ -176,3 +221,27 @@ class ExtrudeCutHandler(OpHandler):
 
         ctx.parts[ctx.active_part_id] = existing - tool
         ctx.features[op.id] = "cut"
+        if pending_circles:
+            ctx.extras[f"hole_dia:{op.id}"] = float(pending_circles[0]["diameter"])
+            ctx.extras[f"hole_positions:{op.id}"] = [
+                tuple(c["center"]) for c in pending_circles
+            ]
+
+
+def _resolve_sketch_plane(plane_name: str | None, ctx: ExecutionContext):
+    """Resolve standard planes plus '<feature> top' aliases for validation."""
+    if plane_name and plane_name.strip().lower().endswith(" top"):
+        part = ctx.active_part()
+        bb = part.bounding_box()
+        dx = abs(bb.size.X)
+        dy = abs(bb.size.Y)
+        dz = abs(bb.size.Z)
+        from build123d import Plane
+
+        if dz <= dx and dz <= dy:
+            return Plane(origin=(0, 0, bb.max.Z), x_dir=(1, 0, 0), z_dir=(0, 0, 1))
+        if dy <= dx and dy <= dz:
+            return Plane(origin=(0, bb.max.Y, 0), x_dir=(1, 0, 0), z_dir=(0, 1, 0))
+        return Plane(origin=(bb.max.X, 0, 0), x_dir=(0, 1, 0), z_dir=(1, 0, 0))
+
+    return resolve_plane(plane_name)

@@ -71,18 +71,16 @@ class FilletHandler(OpHandler):
             top_face = max(part.faces(), key=lambda f: f.center().Z)
             return [e for e in top_face.edges() if ...]
 
-        TODO(claude/codex): implement.
         """
-        raise NotImplementedError("FilletHandler._select_edges")
+        return _select_external_edges(part, feature_ids, min_length_mm)
 
     def _guard_radius(self, part: Any, radius_mm: float) -> None:
         """Refuse radii > half the part's thinnest dimension.
 
         Mirrors the C# executor's pre-check. Raises ValueError on violation.
 
-        TODO(claude/codex): implement.
         """
-        raise NotImplementedError("FilletHandler._guard_radius")
+        _guard_against_thickness(part, radius_mm, "Fillet radius")
 
 
 class ChamferHandler(OpHandler):
@@ -110,13 +108,52 @@ class ChamferHandler(OpHandler):
         implementation: extract a free function `_select_external_edges`
         in this module and call it from both handlers.
 
-        TODO(claude/codex): implement.
         """
-        raise NotImplementedError("ChamferHandler._select_edges")
+        return _select_external_edges(part, feature_ids, min_length_mm)
 
     def _guard_distance(self, part: Any, distance_mm: float) -> None:
         """Refuse distances > half the part's thinnest dimension.
 
-        TODO(claude/codex): implement.
         """
-        raise NotImplementedError("ChamferHandler._guard_distance")
+        _guard_against_thickness(part, distance_mm, "Chamfer distance")
+
+
+def _select_external_edges(part: Any, feature_ids: list[str], min_length_mm: float) -> "list[Edge]":
+    """Select linear external edges using the same conservative policy as C#.
+
+    build123d exposes topological edges directly. We keep only line edges and
+    skip short edges so hole rims, arcs, and tiny residual edges cannot make
+    fillet/chamfer validation fail for the wrong reason.
+    """
+    selectors = {s.lower() for s in (feature_ids or [])}
+    if "__top_edges__" in selectors or "top_edges" in selectors:
+        faces = list(part.faces())
+        if not faces:
+            raise ValueError("No faces found for top-edge selection")
+        source_edges = max(faces, key=lambda f: f.center().Z).edges()
+    else:
+        source_edges = part.edges()
+
+    edges: list[Edge] = []
+    for edge in source_edges:
+        if edge.geom_type != GeomType.LINE:
+            continue
+        if edge.length < min_length_mm:
+            continue
+        edges.append(edge)
+
+    if not edges:
+        raise ValueError("No compatible linear edges found")
+    return edges
+
+
+def _guard_against_thickness(part: Any, value_mm: float, label: str) -> None:
+    """Refuse edge finishes larger than half the thinnest body dimension."""
+    bb = part.bounding_box()
+    thickness = min(abs(bb.size.X), abs(bb.size.Y), abs(bb.size.Z))
+    max_safe = (thickness / 2.0) - 0.01
+    if max_safe > 0 and value_mm > max_safe:
+        raise ValueError(
+            f"{label} {value_mm:g} mm is too large for part thickness "
+            f"{thickness:g} mm; max safe is {max_safe:g} mm"
+        )

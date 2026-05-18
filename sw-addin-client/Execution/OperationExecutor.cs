@@ -510,15 +510,83 @@ namespace SwCopilotAddin.Execution
 
         private static string ClassifyError(string message)
         {
-            if (message.IndexOf("sketch", StringComparison.OrdinalIgnoreCase) >= 0)
+            if (Has(message, "counterbore depth") ||
+                Has(message, "counterbore would cut through"))
+                return "COUNTERBORE_TOO_DEEP";
+
+            if (Has(message, "does not fit inside current"))
+                return "HOLE_OUTSIDE_FACE_BOUNDS";
+
+            if (Has(message, "Hole layout conflicts") ||
+                Has(message, "touch or overlap"))
+                return "HOLE_LAYOUT_CONFLICT";
+
+            if ((Has(message, "Fillet radius") || Has(message, "Chamfer")) &&
+                Has(message, "too large") &&
+                Has(message, "thickness"))
+                return "RADIUS_EXCEEDS_THICKNESS";
+
+            if (Has(message, "edges are incompatible") ||
+                Has(message, "No edges found to fillet") ||
+                Has(message, "No edges found to chamfer") ||
+                Has(message, "Fillet failed") ||
+                Has(message, "Chamfer failed"))
+                return "EDGE_SET_INCOMPATIBLE";
+
+            if (Has(message, "Could not select sketch plane for holes") ||
+                Has(message, "could not select open face") ||
+                Has(message, "could not select face to draft") ||
+                Has(message, "could not select neutral plane"))
+                return "FACE_NOT_FOUND";
+
+            if (Has(message, "Feature not found") ||
+                Has(message, "No deletable features found") ||
+                Has(message, "could not select profile sketch") ||
+                Has(message, "could not select path sketch") ||
+                Has(message, "requires profile_id") ||
+                Has(message, "requires source_ids"))
+                return "FEATURE_REF_NOT_FOUND";
+
+            if (Has(message, "requires active sketch") ||
+                Has(message, "sketch must") ||
+                Has(message, "closed sketch") ||
+                Has(message, "open contour") ||
+                Has(message, "path must pierce") ||
+                Has(message, "sketch"))
                 return "SKETCH_PROFILE_INVALID";
-            if (message.IndexOf("select", StringComparison.OrdinalIgnoreCase) >= 0)
+
+            if (Has(message, "No active document") ||
+                Has(message, "No active part document") ||
+                Has(message, "requires an active drawing document"))
+                return "DOCUMENT_CONTEXT_INVALID";
+
+            if (Has(message, "must be positive") ||
+                Has(message, "requires distance_mm") ||
+                Has(message, "requires at least one"))
+                return "INVALID_PARAMETERS";
+
+            if (Has(message, "select"))
                 return "SELECTION_FAILED";
-            if (message.IndexOf("cut", StringComparison.OrdinalIgnoreCase) >= 0)
+
+            if (Has(message, "cut"))
                 return "CUT_FAILED";
-            if (message.IndexOf("extrude", StringComparison.OrdinalIgnoreCase) >= 0)
+
+            if (Has(message, "extrude"))
                 return "EXTRUDE_FAILED";
+
+            if (Has(message, "pattern"))
+                return "PATTERN_FAILED";
+
+            if (Has(message, "Export failed") ||
+                Has(message, "export_file"))
+                return "EXPORT_FAILED";
+
             return "EXECUTION_FAILED";
+        }
+
+        private static bool Has(string message, string value)
+        {
+            return message?.IndexOf(value, StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private static string DispatchWithoutDocument(OperationDto op)

@@ -41,7 +41,6 @@ def _plate_with_holes(hole_type: str, fastener: str = "M6",
     ])
 
 
-@pytest.mark.xfail(reason="HoleWizardHandler not yet implemented", strict=False)
 def test_simple_m6_four_corner_holes_reduces_volume():
     """Once implemented: four through-holes should leave the bbox at 100×60×10
     but reduce body volume by 4 × π × (clearance_r)² × thickness."""
@@ -53,14 +52,12 @@ def test_simple_m6_four_corner_holes_reduces_volume():
     assert bb.z_mm == pytest.approx(10.0, abs=0.05)
 
 
-@pytest.mark.xfail(reason="HoleWizardHandler not yet implemented", strict=False)
 def test_m6_counterbore_on_10mm_plate_succeeds():
     """M6 counterbore depth is 6mm (ISO 4762); plate is 10mm → fits."""
     result = Build123dBackend().execute(_plate_with_holes("counterbore", "M6"))
     assert result.success, result.errors
 
 
-@pytest.mark.xfail(reason="HoleWizardHandler not yet implemented", strict=False)
 def test_tapped_hole_is_validated_as_clearance():
     """build123d has no thread modelling — tapped holes validate as simple
     through-holes with clearance diameter."""
@@ -68,7 +65,6 @@ def test_tapped_hole_is_validated_as_clearance():
     assert result.success, result.errors
 
 
-@pytest.mark.xfail(reason="HoleWizardHandler not yet implemented", strict=False)
 def test_unsupported_fastener_records_error_not_crash():
     """Unknown fastener size → ValueError → recorded on result.errors."""
     graph = _plate_with_holes("simple", fastener="M99")
