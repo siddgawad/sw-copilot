@@ -61,7 +61,7 @@ def test_compact_repair_addendum_lists_common_fixes():
     """Live test showed the repair loop didn't know the canonical fix for
     'Could not select top face'. The compact addendum now spells it out."""
     assert "Could not select top face" in _COMPACT_REPAIR_ADDENDUM
-    assert '"Top Plane"' in _COMPACT_REPAIR_ADDENDUM
+    assert "active_top_face" in _COMPACT_REPAIR_ADDENDUM
 
 
 # ── Repair-mode prompt assembly ───────────────────────────────────────────────

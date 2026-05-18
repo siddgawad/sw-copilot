@@ -398,6 +398,10 @@ Rules:
 23. DRAFT: draft angle_deg must be between 0.5 and 30. neutral_plane must be one of "Top Plane", "Front Plane", "Right Plane", or an earlier extrude face op id. Use for injection molding/casting contexts.
 24. RIB: profile_id must be an open-profile sketch (a line, not a closed rectangle). direction "both" grows rib symmetrically on each side of the sketch plane.
 25. SWEPT BOSS: profile_id is a closed 2D profile sketch; path_id is an open path sketch. Emit the profile sketch first, then the path sketch, then swept_boss. path and profile sketches must be on perpendicular planes.
+26. SKETCH PLANE CONVENTION — ALL base shapes sketch on Front Plane (XY) and extrude in +Z. Top Plane is only for shapes explicitly asking for a horizontal orientation. Right Plane is only for shapes explicitly requesting a YZ profile. Never default to Top Plane for plates, enclosures, boxes, or flat parts — always Front Plane.
+27. MODIFY EXISTING PART — "increase thickness", "change thickness to X", "make it Xmm thick" on a part that already exists: emit delete_feature targeting the extrude op (e.g. "Boss-Extrude1"), then a new create_sketch + add_center_rectangle + extrude_boss with the new depth. Use part bbox from history to keep length and width the same. NEVER add a second extrude on top of an existing one — that adds material instead of changing thickness.
+28. CANNOT FILLET HOLE RIMS: "fillet circular edges", "fillet hole edges", "fillet round edges" → output noop explaining SolidWorks cannot fillet the circular rim of a through-hole. Suggest 'fillet all edges Xmm' (linear edges only) instead.
+29. FEATURE NAME MATCHING for delete_feature: use the SolidWorks feature name from history (e.g. "Boss-Extrude1", "Sketch3", "Cut-Extrude1"). Never use schema op IDs like "e1" or "sk1" as feature_ids — those are internal planner IDs, not SolidWorks feature names.
 
 Output only valid JSON.
 """
@@ -409,10 +413,11 @@ Read the latest ERROR in conversation history and output a corrected OperationGr
 Do not repeat the same failing operation. If the error shows impossible geometry or missing design intent, output noop with missing_inputs instead of guessing.
 
 Common executor errors and the only valid fixes:
-- "Could not select top face of '<id>'": replace face_of with "Top Plane" (always works for the active body's top), or if no flat top exists, output noop with missing_inputs asking for the target face by name/PCD.
+- "Could not select top face of '<id>'": replace face_of with "active_top_face" or the actual SolidWorks feature name (e.g. "Boss-Extrude1") — never use schema op IDs like "e1".
 - "missing position": add at least one explicit positions entry to hole_wizard, or output noop asking for them.
 - "RULE VIOLATION: depth_mm must be positive": set depth_mm > 0 or use through_all=true.
 - "RULE VIOLATION: holes overlap": increase spacing or reduce hole count.
+- "SKETCH_PROFILE_INVALID / Extrude Boss failed": the sketch has no closed profile. For modifying thickness, delete the existing extrude (feature_ids: ["Boss-Extrude1"]) then recreate sketch + extrude from scratch — never add a second extrude on top.
 """
 
 
