@@ -2240,6 +2240,43 @@ namespace SwCopilotAddin.Execution
                 toDelete.AddRange(CollectUserFeatures(doc));
             }
 
+            // Absorbed sketches (e.g. Sketch3 inside Cut-Extrude2) do not appear
+            // in the top-level GetNextFeature() walk. Fall back to direct
+            // SelectByID2 for each requested name variant.
+            if (toDelete.Count == 0 && op.FeatureIds != null && op.FeatureIds.Length > 0)
+            {
+                int? skNum = op.FeatureIds.Select(TryExtractSketchNumber).FirstOrDefault(n => n.HasValue);
+                var candidates = new List<string>();
+                if (skNum.HasValue)
+                {
+                    candidates.Add($"Sketch{skNum}");
+                    candidates.Add($"sk{skNum}");
+                }
+                foreach (string id in op.FeatureIds)
+                {
+                    candidates.Add(id.Trim());
+                    string norm = NormalizeFeatureLookup(id);
+                    if (!string.IsNullOrEmpty(norm)) candidates.Add(norm);
+                }
+                int opts2 = (int)swDeleteSelectionOptions_e.swDelete_Absorbed |
+                            (int)swDeleteSelectionOptions_e.swDelete_Children;
+                foreach (string candidate in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
+                {
+                    doc.ClearSelection2(true);
+                    // Try selecting as a sketch (absorbed type) then as a generic feature
+                    bool sel = doc.Extension.SelectByID2(candidate, "SKETCH", 0, 0, 0, false, 0, null, 0);
+                    if (!sel)
+                        sel = doc.Extension.SelectByID2(candidate, "BODYFEATURE", 0, 0, 0, false, 0, null, 0);
+                    if (sel)
+                    {
+                        doc.Extension.DeleteSelection2(opts2);
+                        doc.ForceRebuild3(false);
+                        return $"Deleted '{candidate}'";
+                    }
+                }
+                return $"Feature not found: {string.Join(", ", op.FeatureIds)}";
+            }
+
             if (toDelete.Count == 0) return "No deletable features found.";
 
             doc.ClearSelection2(true);

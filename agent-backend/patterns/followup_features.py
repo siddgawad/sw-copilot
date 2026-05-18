@@ -166,6 +166,12 @@ def _try_corner_holes(prompt: str, context: Optional[DocumentContext]) -> Operat
     )
 
 
+_CIRCULAR_EDGE_KW = re.compile(
+    r"\b(circular|circle|hole|round|bore)\s*(edge|edges|rim|rims)?\b",
+    re.IGNORECASE,
+)
+
+
 def _try_edge_finish(prompt: str, context: Optional[DocumentContext] = None) -> OperationGraph | None:
     text = prompt.lower()
     is_chamfer = "chamfer" in text
@@ -178,6 +184,17 @@ def _try_edge_finish(prompt: str, context: Optional[DocumentContext] = None) -> 
     # or chamfer clause.
     if any(re.search(rf"\b{kw}\b", text) for kw in _NEW_SHAPE_KEYWORDS):
         return None
+
+    # SolidWorks cannot fillet/chamfer the circular rim of a through-hole —
+    # the operation would intersect itself. Catch this before wasting a COM call.
+    if is_fillet and _CIRCULAR_EDGE_KW.search(prompt):
+        return _needs_input(
+            "fillet",
+            "SolidWorks cannot fillet the circular rim of a through-hole — "
+            "the fillet would intersect itself geometrically.\n"
+            "You can fillet the flat/linear edges of the plate instead: "
+            "'fillet all edges 1mm'",
+        )
 
     distance = _first_distance(prompt)
     if distance is None:
